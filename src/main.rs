@@ -1,17 +1,22 @@
 use configuration::Configuration;
 use health::Health;
-use pools::RolePool;
 use postgres::Postgres;
-use proto::{health::health_server::HealthServer, postgres::postgres_server::PostgresServer};
+use proto::{
+    health::health_server::HealthServer, postgres::postgres_server::PostgresServer,
+    transaction::transaction_server::TransactionServer,
+};
 use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::Server;
+use transaction::Transaction;
 
 mod configuration;
 mod health;
 mod pools;
 mod postgres;
+mod protocol;
+mod transaction;
 mod proto {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("routes");
 
@@ -35,7 +40,7 @@ enum Error {
     #[error("Tracing error: {0}")]
     Logging(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error(transparent)]
-    Pool(#[from] pools::Error),
+    Pool(#[from] pools::default::Error),
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
     #[error("Error setting up SIGTERM handler: {0}")]
@@ -65,7 +70,7 @@ async fn run_service() -> Result<(), Error> {
 
     // configure the application service itself
     let address = SocketAddr::from(&configuration);
-    let pool = RolePool::try_from(configuration).map(Arc::new)?;
+    let pool = pools::default::Pool::try_from(configuration).map(Arc::new)?;
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
         .build()?;
@@ -74,7 +79,8 @@ async fn run_service() -> Result<(), Error> {
         .trace_fn(|_| tracing::info_span!("postgrpc"))
         .add_service(reflection)
         .add_service(HealthServer::new(Health))
-        .add_service(PostgresServer::new(Postgres::new(pool)))
+        .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))))
+        .add_service(TransactionServer::new(Transaction::new(pool)))
         .serve_with_shutdown(address, shutdown);
 
     tracing::info!(address = %&address, "PostgRPC service starting");

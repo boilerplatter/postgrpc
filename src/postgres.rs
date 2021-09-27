@@ -1,9 +1,9 @@
 use crate::{
-    pools::{self, Connection, Parameter, Pool},
+    pools::{self, Connection, Pool},
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
+    protocol::{self, Parameter},
 };
 use futures::{pin_mut, StreamExt, TryStream, TryStreamExt};
-use prost_types::value::Kind;
 use std::{fmt, marker::PhantomData, sync::Arc};
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
@@ -19,7 +19,9 @@ pub enum Error {
     )]
     InvalidValues,
     #[error(transparent)]
-    Pool(#[from] pools::Error),
+    Pool(#[from] pools::default::Error),
+    #[error(transparent)]
+    Rpc(#[from] Status),
     #[error("Error sending message through response stream: {0}")]
     Stream(#[from] SendError<Result<prost_types::Struct, Status>>),
     #[error("SQL Query Error: {0}")]
@@ -30,6 +32,7 @@ impl From<Error> for Status {
     fn from(error: Error) -> Self {
         let message = format!("{}", &error);
         match error {
+            Error::Rpc(status) => status,
             Error::InvalidJson | Error::InvalidValues | Error::Query(..) => {
                 Status::invalid_argument(message)
             }
@@ -38,7 +41,7 @@ impl From<Error> for Status {
     }
 }
 
-/// Shared state for all Postgres services
+/// Protocol-agnostic Postgres handlers for any connection pool
 #[derive(Clone)]
 pub struct Postgres<P, K>
 where
@@ -52,7 +55,6 @@ impl<P, K> Postgres<P, K>
 where
     P: Pool<K>,
     K: fmt::Debug,
-    Error: From<P::Error> + From<<P::Connection as Connection>::Error>,
 {
     pub fn new(pool: Arc<P>) -> Self {
         Self {
@@ -71,17 +73,9 @@ where
         tracing::info!("Querying database");
 
         // convert values to scalar parameters
-        // TODO: consider relaxing this constraint for specific cases later
-        // (e.g. ListValues of a single type and JSON/serializable composite types for StructValues)
         let parameters: Vec<_> = values
             .iter()
-            .filter_map(|value| match value.kind.as_ref() {
-                Some(Kind::ListValue(..) | Kind::StructValue(..)) | None => None,
-                Some(Kind::NullValue(..)) => Some(Parameter::Null),
-                Some(Kind::BoolValue(boolean)) => Some(Parameter::Boolean(*boolean)),
-                Some(Kind::NumberValue(number)) => Some(Parameter::Number(*number)),
-                Some(Kind::StringValue(text)) => Some(Parameter::Text(text)),
-            })
+            .filter_map(|value| Parameter::from_proto_value(&value))
             .collect();
 
         if parameters.len() < values.len() {
@@ -89,12 +83,17 @@ where
         }
 
         // get a connection from the pool
-        let connection = self.pool.get_connection(key).await?;
+        let connection = self
+            .pool
+            .get_connection(key)
+            .await
+            .map_err(|error| Error::Rpc(error.into()))?;
 
         // run the query, mapping to prost structs
         let rows = connection
             .query(statement, &parameters)
-            .await?
+            .await
+            .map_err(|error| Error::Rpc(error.into()))?
             .map_err(Error::from)
             .and_then(|row| async move {
                 let json_value = row.try_get::<_, serde_json::Value>("json")?;
@@ -108,43 +107,10 @@ where
                     Err(Error::InvalidJson)
                 }
             })
-            .map_ok(json_to_proto_struct);
+            .map_ok(protocol::json::to_proto_struct);
 
-        // map the row stream to prost structs
+        // return the row stream
         Ok(rows)
-    }
-}
-
-/// Convert a serde_json::Value into a prost_types::Value
-fn json_to_proto_value(json: serde_json::Value) -> prost_types::Value {
-    let kind = match json {
-        serde_json::Value::Null => prost_types::value::Kind::NullValue(0),
-        serde_json::Value::Bool(boolean) => prost_types::value::Kind::BoolValue(boolean),
-        serde_json::Value::Number(number) => match number.as_f64() {
-            Some(number) => prost_types::value::Kind::NumberValue(number),
-            None => prost_types::value::Kind::StringValue(number.to_string()),
-        },
-        serde_json::Value::String(string) => prost_types::value::Kind::StringValue(string),
-        serde_json::Value::Array(array) => {
-            prost_types::value::Kind::ListValue(prost_types::ListValue {
-                values: array.into_iter().map(json_to_proto_value).collect(),
-            })
-        }
-        serde_json::Value::Object(map) => {
-            prost_types::value::Kind::StructValue(json_to_proto_struct(map))
-        }
-    };
-
-    prost_types::Value { kind: Some(kind) }
-}
-
-/// Convert a serde_json::Map into a prost_types::Struct
-fn json_to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> prost_types::Struct {
-    prost_types::Struct {
-        fields: map
-            .into_iter()
-            .map(|(key, value)| (key, json_to_proto_value(value)))
-            .collect(),
     }
 }
 
@@ -154,7 +120,6 @@ impl<P> GrpcService for Postgres<P, Option<String>>
 where
     P: Pool<Option<String>> + Send + Sync + 'static,
     P::Connection: Send + Sync,
-    Error: From<P::Error> + From<<P::Connection as Connection>::Error>,
 {
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 

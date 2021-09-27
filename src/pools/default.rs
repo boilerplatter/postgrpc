@@ -1,12 +1,12 @@
-use super::{Connection, Parameter, Pool};
+use super::{Connection, Parameter};
 use crate::configuration::Configuration;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
 use std::convert::TryFrom;
 use thiserror::Error;
 use tokio_postgres::{error::SqlState, RowStream, Statement};
+use tonic::Status;
 
-/// Error implementation for the default connection pool
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("No system cert found via OpenSSL probe")]
@@ -25,14 +25,30 @@ pub enum Error {
     Tls(#[from] openssl::error::ErrorStack),
 }
 
+impl From<Error> for Status {
+    fn from(error: Error) -> Self {
+        let message = format!("{}", &error);
+
+        match error {
+            Error::CertMissing
+            | Error::Configuration(..)
+            | Error::Pool(..)
+            | Error::Role(..)
+            | Error::Tls(..) => Self::internal(message),
+            Error::Params { .. } | Error::Query(..) => Self::invalid_argument(message),
+        }
+    }
+}
+
 /// Deadpool-based pool implementation keyed by ROLE pointing to a single database
 // database connections are initiated from a single user and shared through SET LOCAL ROLE
 // this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
-pub struct RolePool {
+#[derive(Clone)]
+pub struct Pool {
     pool: deadpool_postgres::Pool,
 }
 
-impl TryFrom<Configuration> for RolePool {
+impl TryFrom<Configuration> for Pool {
     type Error = Error;
 
     fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
@@ -58,7 +74,7 @@ impl TryFrom<Configuration> for RolePool {
 }
 
 #[tonic::async_trait]
-impl Pool<Option<String>> for RolePool {
+impl super::Pool<Option<String>> for Pool {
     type Connection = deadpool_postgres::Client;
     type Error = Error;
 
@@ -87,7 +103,6 @@ impl Connection for deadpool_postgres::Client {
         statement: &str,
         parameters: &[Parameter],
     ) -> Result<RowStream, Self::Error> {
-        // prepare the statement
         let prepared_statement = self.prepare_cached(statement).await?;
 
         // check parameter count to avoid panics
@@ -112,6 +127,12 @@ impl Connection for deadpool_postgres::Client {
             result => result,
         }
     }
+
+    async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+        self.batch_execute(query).await?;
+
+        Ok(())
+    }
 }
 
 /// Wrapper around a raw query that can be retried
@@ -130,7 +151,9 @@ async fn query_raw<'a>(
             "SELECT TO_JSON(result) AS json FROM ({}) AS result",
             &statement
         );
+
         let prepared_statement = client.prepare_cached(&json_statement).await?;
+
         client.query_raw(&prepared_statement, parameters).await?
     };
 
