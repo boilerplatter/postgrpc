@@ -1,0 +1,20 @@
+syntax = "proto3";
+package postgres;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+import "google/api/annotations.proto";
+
+service Postgres {
+  // query the postgres database, streaming rows as they are processed
+  rpc Query (QueryRequest) returns (stream google.protobuf.Struct) {
+    option (google.api.http) = {
+      post: "/query"
+    };
+  }
+}
+
+message QueryRequest {
+  string statement = 1;
+  repeated google.protobuf.Value values = 2;
+}

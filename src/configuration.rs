@@ -1,0 +1,78 @@
+pub use envy::Error;
+use serde::{Deserialize, Deserializer};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
+
+/// Environment-derived configuration
+#[derive(Deserialize, Debug)]
+pub struct Configuration {
+    /// service host IP address
+    #[serde(default = "get_v4_localhost")]
+    pub host: IpAddr,
+    /// service port
+    #[serde(default = "get_service_port")]
+    pub port: u16,
+    /// termination grace period duration (in seconds)
+    #[serde(default, deserialize_with = "from_seconds_string")]
+    pub termination_period: Duration,
+    /// Postgres database to connect to
+    pub pgdbname: String,
+    /// host to use for database connections
+    #[serde(default = "get_localhost")]
+    pub pghost: String,
+    /// Password to use for database connections
+    pub pgpassword: String,
+    /// Port to use for database connections
+    #[serde(default = "get_postgres_port")]
+    pub pgport: u16,
+    /// User to use for database connections
+    pub pguser: String,
+}
+
+impl Configuration {
+    /// Generate a new configuration from the environment
+    pub fn new() -> Result<Self, Error> {
+        envy::from_env()
+    }
+}
+
+/// Generate a default "localhost" host value
+fn get_localhost() -> String {
+    "localhost".to_string()
+}
+
+/// Generate a default Ipv4 pointing to localhost for configuration
+fn get_v4_localhost() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+}
+
+/// Generate a default service port for configuration
+fn get_service_port() -> u16 {
+    50051
+}
+
+/// Generate a default port for connecting to the postgres database
+fn get_postgres_port() -> u16 {
+    5432
+}
+
+/// Deserializer for termination_period seconds, passed through the environment as a string
+fn from_seconds_string<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let base_string = String::deserialize(deserializer)?;
+    let parsed_seconds: u64 = base_string.parse().map_err(serde::de::Error::custom)?;
+    let duration = Duration::from_secs(parsed_seconds);
+
+    Ok(duration)
+}
+
+/// Convert configurations into a valid SocketAddr
+impl From<&Configuration> for SocketAddr {
+    fn from(configuration: &Configuration) -> Self {
+        SocketAddr::new(configuration.host, configuration.port)
+    }
+}

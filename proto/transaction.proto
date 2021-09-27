@@ -1,0 +1,58 @@
+syntax = "proto3";
+package transaction;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/api/annotations.proto";
+
+service Transaction {
+  // Reserves a transaction connection from the pool
+  rpc Begin (google.protobuf.Empty) returns (BeginResponse) {
+    option (google.api.http) = {
+      post: "/transactions"
+    };
+  }
+
+  // Commits the transaction by transaction ID
+  rpc Commit (CommitRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "transactions/{id}/commit"
+    };
+  }
+
+  // Query the transaction by ID, streaming rows as they are processed
+  rpc Query (TransactionQueryRequest) returns (stream google.protobuf.Struct) {
+    option (google.api.http) = {
+      post: "transactions/{id}/query"
+    };
+  }
+
+  // Rolls back the transaction by transaction ID
+  rpc Rollback (RollbackRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "transactions/{id}/rollback"
+    };
+  }
+}
+
+message BeginResponse {
+  string id = 1; // unique transaction ID
+}
+
+message CommitRequest {
+  string id = 1;
+}
+
+message RollbackRequest {
+  string id = 1;
+}
+
+message TransactionQueryRequest {
+  string statement = 1;
+  repeated google.protobuf.Value values = 2;
+  string id = 3;
+}
+
+message TransactionQueryResponse {
+  repeated google.protobuf.Struct rows = 1;
+}
