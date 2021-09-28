@@ -15,7 +15,12 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub enum Error<T>
+where
+    T: Into<Status> + std::error::Error + 'static,
+{
+    #[error(transparent)]
+    Connection(T),
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
     #[error(
@@ -23,20 +28,21 @@ pub enum Error {
     )]
     InvalidValues,
     #[error(transparent)]
-    Pool(#[from] pools::transaction::Error),
+    Pool(#[from] pools::transaction::Error<T>),
     #[error("Error sending message through response stream: {0}")]
     Stream(#[from] SendError<Result<prost_types::Struct, Status>>),
-    #[error(transparent)]
-    Rpc(#[from] Status),
     #[error("SQL Query Error: {0}")]
     Query(#[from] tokio_postgres::Error),
 }
 
-impl From<Error> for Status {
-    fn from(error: Error) -> Self {
+impl<T> From<Error<T>> for Status
+where
+    T: Into<Status> + std::error::Error + 'static,
+{
+    fn from(error: Error<T>) -> Self {
         let message = format!("{}", &error);
         match error {
-            Error::Rpc(status) => status,
+            Error::Connection(error) => error.into(),
             Error::InvalidJson | Error::InvalidValues | Error::Query(..) => {
                 Self::invalid_argument(message)
             }
@@ -61,6 +67,7 @@ where
     K: Hash + Eq + Send + Sync + fmt::Debug + Clone + 'static,
     P: Pool<K> + Send + Sync + 'static,
     P::Connection: Send + Sync + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
 {
     pub fn new(pool: Arc<P>) -> Self {
         Self {
@@ -69,7 +76,7 @@ where
     }
 
     #[tracing::instrument(skip(self))]
-    async fn begin(&self, key: K) -> Result<Uuid, Error> {
+    async fn begin(&self, key: K) -> Result<Uuid, Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Beginning transaction");
 
         let transaction_id = self.pool.begin(key).await?;
@@ -84,7 +91,10 @@ where
         key: K,
         statement: &str,
         values: &[prost_types::Value],
-    ) -> Result<impl TryStream<Ok = prost_types::Struct, Error = Error>, Error> {
+    ) -> Result<
+        impl TryStream<Ok = prost_types::Struct, Error = Error<<P::Connection as Connection>::Error>>,
+        Error<<P::Connection as Connection>::Error>,
+    > {
         tracing::info!("Querying transaction");
 
         // convert values to scalar parameters
@@ -105,12 +115,12 @@ where
         let rows = connection
             .query(statement, &parameters)
             .await
-            .map_err(|error| Error::Rpc(error.into()))?
+            .map_err(Error::Connection)?
             .map_err(Error::Query)
             .and_then(|row| async move {
                 let json_value = row.try_get::<_, serde_json::Value>("json")?;
 
-                Ok::<_, Error>(json_value)
+                Ok::<_, Error<_>>(json_value)
             })
             .and_then(|json_value| async move {
                 if let serde_json::Value::Object(map) = json_value {
@@ -126,7 +136,11 @@ where
     }
 
     #[tracing::instrument(skip(self))]
-    async fn commit(&self, id: Uuid, key: K) -> Result<(), Error> {
+    async fn commit(
+        &self,
+        id: Uuid,
+        key: K,
+    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Committing transaction");
 
         self.pool.commit(id, key).await?;
@@ -135,7 +149,11 @@ where
     }
 
     #[tracing::instrument(skip(self))]
-    async fn rollback(&self, id: Uuid, key: K) -> Result<(), Error> {
+    async fn rollback(
+        &self,
+        id: Uuid,
+        key: K,
+    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Rolling back transaction");
 
         self.pool.rollback(id, key).await?;
@@ -150,6 +168,7 @@ impl<P> GrpcService for Transaction<P, Option<String>>
 where
     P: Pool<Option<String>> + Send + Sync + 'static,
     P::Connection: Send + Sync + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
 {
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 

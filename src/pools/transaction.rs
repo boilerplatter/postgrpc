@@ -13,23 +13,29 @@ use tonic::Status;
 use uuid::Uuid;
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum Error<C>
+where
+    C: Into<Status> + std::error::Error + 'static,
+{
+    #[error(transparent)]
+    Connection(C),
     #[error("Error retrieving connection from transaction pool")]
     ConnectionFailure,
     #[error("SQL Error: {0}")]
     Query(#[from] tokio_postgres::Error),
     #[error("Requested transaction has not been initialized or was cleaned up due to inactivity")]
     Uninitialized,
-    #[error(transparent)]
-    Rpc(#[from] Status),
 }
 
-impl From<Error> for Status {
-    fn from(error: Error) -> Self {
+impl<C> From<Error<C>> for Status
+where
+    C: Into<Status> + std::error::Error + 'static,
+{
+    fn from(error: Error<C>) -> Self {
         let message = format!("{}", &error);
 
         match error {
-            Error::Rpc(status) => status,
+            Error::Connection(error) => error.into(),
             Error::ConnectionFailure => Self::resource_exhausted(message),
             Error::Query(..) => Self::invalid_argument(message),
             Error::Uninitialized => Self::not_found(message),
@@ -164,6 +170,7 @@ where
     K: Hash + Eq + Send + Sync + fmt::Debug + Clone + 'static,
     P: super::Pool<K> + Send + Sync + 'static,
     P::Connection: Send + Sync + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
 {
     /// Initialize a new shared transaction pool
     pub fn new(pool: Arc<P>) -> Self {
@@ -218,7 +225,7 @@ where
 
     /// Begin a transaction, storing the associated connection in the cache
     #[tracing::instrument(skip(self))]
-    pub async fn begin(&self, key: K) -> Result<Uuid, Error> {
+    pub async fn begin(&self, key: K) -> Result<Uuid, Error<<P::Connection as Connection>::Error>> {
         // generate a unique transaction ID to be included in subsequent requests
         let transaction_id = Uuid::new_v4();
 
@@ -236,10 +243,7 @@ where
             .await
             .map_err(|_| Error::ConnectionFailure)?;
 
-        connection
-            .batch("BEGIN")
-            .await
-            .map_err(|error| Error::Rpc(error.into()))?;
+        connection.batch("BEGIN").await.map_err(Error::Connection)?;
 
         let transaction = Transaction::new(Arc::new(connection));
 
@@ -257,7 +261,11 @@ where
 
     /// Remove a transaction from the cache, committing its changeset in postgres
     #[tracing::instrument(skip(self))]
-    pub async fn commit(&self, transaction_id: Uuid, key: K) -> Result<(), Error> {
+    pub async fn commit(
+        &self,
+        transaction_id: Uuid,
+        key: K,
+    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Committing active transaction");
 
         self.remove(transaction_id, key)
@@ -265,14 +273,18 @@ where
             .connection
             .batch("COMMIT")
             .await
-            .map_err(|error| Error::Rpc(error.into()))?;
+            .map_err(Error::Connection)?;
 
         Ok(())
     }
 
     /// Remove a transaction from the cache, rolling back all intermediate changes
     #[tracing::instrument(skip(self))]
-    pub async fn rollback(&self, transaction_id: Uuid, key: K) -> Result<(), Error> {
+    pub async fn rollback(
+        &self,
+        transaction_id: Uuid,
+        key: K,
+    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Rolling back active transaction");
 
         self.remove(transaction_id, key)
@@ -280,7 +292,7 @@ where
             .connection
             .batch("ROLLBACK")
             .await
-            .map_err(|error| Error::Rpc(error.into()))?;
+            .map_err(Error::Connection)?;
 
         Ok(())
     }
@@ -289,7 +301,7 @@ where
         &self,
         transaction_id: Uuid,
         key: K,
-    ) -> Result<Transaction<P::Connection>, Error> {
+    ) -> Result<Transaction<P::Connection>, Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Removing transaction from the cache");
 
         let transaction = self
@@ -312,9 +324,10 @@ where
     K: Hash + Eq + Send + Sync + Clone,
     P: super::Pool<K> + Send + Sync,
     P::Connection: Send + Sync + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
 {
     type Connection = Transaction<P::Connection>;
-    type Error = Error;
+    type Error = Error<<P::Connection as Connection>::Error>;
 
     async fn get_connection(
         &self,

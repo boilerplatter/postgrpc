@@ -8,7 +8,7 @@ pub mod transaction;
 /// Connection behavior across abstract database connection types
 #[tonic::async_trait]
 pub trait Connection {
-    type Error: std::error::Error + Into<Status>;
+    type Error: Into<Status>;
 
     /// Run a query parameterized by a scalar subset of proto-JSON Values, returning a stream of rows
     async fn query(
@@ -25,7 +25,7 @@ pub trait Connection {
 #[tonic::async_trait]
 pub trait Pool<K = String> {
     type Connection: Connection;
-    type Error: std::error::Error + Into<Status>;
+    type Error: Into<Status>;
 
     /// Get a single connection from the pool using some key
     async fn get_connection(&self, key: K) -> Result<Self::Connection, Self::Error>;

@@ -1,5 +1,5 @@
 use crate::{
-    pools::{self, Connection, Pool},
+    pools::{Connection, Pool},
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
     protocol::{self, Parameter},
 };
@@ -11,7 +11,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub enum Error<P, C>
+where
+    P: Into<Status> + std::error::Error + 'static,
+    C: Into<Status> + std::error::Error + 'static,
+{
+    #[error(transparent)]
+    Connection(C),
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
     #[error(
@@ -19,24 +25,28 @@ pub enum Error {
     )]
     InvalidValues,
     #[error(transparent)]
-    Pool(#[from] pools::default::Error),
-    #[error(transparent)]
-    Rpc(#[from] Status),
+    Pool(P),
     #[error("Error sending message through response stream: {0}")]
     Stream(#[from] SendError<Result<prost_types::Struct, Status>>),
     #[error("SQL Query Error: {0}")]
     Query(#[from] tokio_postgres::Error),
 }
 
-impl From<Error> for Status {
-    fn from(error: Error) -> Self {
+impl<P, C> From<Error<P, C>> for Status
+where
+    P: Into<Status> + std::error::Error + 'static,
+    C: Into<Status> + std::error::Error + 'static,
+{
+    fn from(error: Error<P, C>) -> Self {
         let message = format!("{}", &error);
+
         match error {
-            Error::Rpc(status) => status,
+            Error::Connection(error) => error.into(),
+            Error::Pool(error) => error.into(),
             Error::InvalidJson | Error::InvalidValues | Error::Query(..) => {
                 Status::invalid_argument(message)
             }
-            Error::Pool(..) | Error::Stream(..) => Status::internal(message),
+            Error::Stream(..) => Status::internal(message),
         }
     }
 }
@@ -53,8 +63,10 @@ where
 
 impl<P, K> Postgres<P, K>
 where
-    P: Pool<K>,
     K: fmt::Debug,
+    P: Pool<K>,
+    P::Error: std::error::Error + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + 'static,
 {
     pub fn new(pool: Arc<P>) -> Self {
         Self {
@@ -69,7 +81,13 @@ where
         key: K,
         statement: &str,
         values: &[prost_types::Value],
-    ) -> Result<impl TryStream<Ok = prost_types::Struct, Error = Error>, Error> {
+    ) -> Result<
+        impl TryStream<
+            Ok = prost_types::Struct,
+            Error = Error<P::Error, <P::Connection as Connection>::Error>,
+        >,
+        Error<P::Error, <P::Connection as Connection>::Error>,
+    > {
         tracing::info!("Querying database");
 
         // convert values to scalar parameters
@@ -83,22 +101,18 @@ where
         }
 
         // get a connection from the pool
-        let connection = self
-            .pool
-            .get_connection(key)
-            .await
-            .map_err(|error| Error::Rpc(error.into()))?;
+        let connection = self.pool.get_connection(key).await.map_err(Error::Pool)?;
 
         // run the query, mapping to prost structs
         let rows = connection
             .query(statement, &parameters)
             .await
-            .map_err(|error| Error::Rpc(error.into()))?
+            .map_err(Error::Connection)?
             .map_err(Error::from)
             .and_then(|row| async move {
                 let json_value = row.try_get::<_, serde_json::Value>("json")?;
 
-                Ok::<_, Error>(json_value)
+                Ok::<_, Error<_, _>>(json_value)
             })
             .and_then(|json_value| async move {
                 if let serde_json::Value::Object(map) = json_value {
@@ -120,6 +134,8 @@ impl<P> GrpcService for Postgres<P, Option<String>>
 where
     P: Pool<Option<String>> + Send + Sync + 'static,
     P::Connection: Send + Sync,
+    P::Error: std::error::Error + 'static,
+    <P::Connection as Connection>::Error: std::error::Error + 'static,
 {
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 
