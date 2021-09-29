@@ -1,4 +1,5 @@
 use super::protocol::Parameter;
+use std::task::{Context, Poll};
 use tokio_postgres::RowStream;
 use tonic::Status;
 
@@ -29,4 +30,26 @@ pub trait Pool<K = String> {
 
     /// Get a single connection from the pool using some key
     async fn get_connection(&self, key: K) -> Result<Self::Connection, Self::Error>;
+}
+
+/// Raw connection behavior for spawning custom behavior on async executors
+pub trait RawConnection: Send {
+    type Message;
+    type Error: Into<Status>;
+
+    /// Poll a raw connection for asynchronous messages (e.g. NOTIFY notifications)
+    fn poll_messages(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<prost_types::Value, Self::Error>>>;
+}
+
+/// Pool-bypassing bare connection behavior for maximum flexibility
+#[tonic::async_trait]
+pub trait RawConnect<K>: Pool<K> {
+    type Client: Connection;
+    type RawConnection: RawConnection;
+
+    /// Get a connection + raw_connection pair for an underlying pool
+    async fn connect(&self) -> Result<(Self::Client, Self::RawConnection), Self::Error>;
 }

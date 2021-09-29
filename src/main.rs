@@ -1,16 +1,18 @@
+use channel::Channel;
 use configuration::Configuration;
 use health::Health;
 use postgres::Postgres;
 use proto::{
-    health::health_server::HealthServer, postgres::postgres_server::PostgresServer,
-    transaction::transaction_server::TransactionServer,
+    channel::channel_server::ChannelServer, health::health_server::HealthServer,
+    postgres::postgres_server::PostgresServer, transaction::transaction_server::TransactionServer,
 };
 use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
-use tonic::transport::Server;
+use tonic::{transport::Server, Request, Status};
 use transaction::Transaction;
 
+mod channel;
 mod configuration;
 mod health;
 mod pools;
@@ -26,6 +28,10 @@ mod proto {
 
     pub mod transaction {
         tonic::include_proto!("transaction");
+    }
+
+    pub mod channel {
+        tonic::include_proto!("channel");
     }
 
     pub mod health {
@@ -49,6 +55,20 @@ enum Error {
     Transport(#[from] tonic::transport::Error),
 }
 
+/// derive a role from headers to use as a connection pool key
+fn get_role<T>(request: &Request<T>) -> Result<Option<String>, Status> {
+    let role = request
+        .metadata()
+        .get("x-postgrpc-role")
+        .map(|role| role.to_str())
+        .transpose()
+        .map_err(|_| Status::invalid_argument("Invalid role in x-postgres-role header"))?
+        .map(String::from);
+
+    Ok(role)
+}
+
+/// Run the app in a Result-containd function
 async fn run_service() -> Result<(), Error> {
     // configure logging
     tracing_subscriber::fmt().init();
@@ -80,7 +100,8 @@ async fn run_service() -> Result<(), Error> {
         .add_service(reflection)
         .add_service(HealthServer::new(Health))
         .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))))
-        .add_service(TransactionServer::new(Transaction::new(pool)))
+        .add_service(TransactionServer::new(Transaction::new(Arc::clone(&pool))))
+        .add_service(ChannelServer::new(Channel::new(pool)))
         .serve_with_shutdown(address, shutdown);
 
     tracing::info!(address = %&address, "PostgRPC service starting");

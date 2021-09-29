@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "./proto/postgres.proto",
                 "./proto/transaction.proto",
+                "./proto/channel.proto",
                 "./proto/health.proto",
             ],
             &["./proto"],

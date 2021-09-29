@@ -1,4 +1,5 @@
 use crate::{
+    get_role,
     pools::{self, Connection, Pool},
     proto::transaction::{
         transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest,
@@ -245,17 +246,4 @@ where
 
         Ok(Response::new(()))
     }
-}
-
-/// derive a role from headers to use as a connection pool key
-fn get_role<T>(request: &Request<T>) -> Result<Option<String>, Status> {
-    let role = request
-        .metadata()
-        .get("x-postgrpc-role")
-        .map(|role| role.to_str())
-        .transpose()
-        .map_err(|_| Status::invalid_argument("Invalid role in x-postgres-role header"))?
-        .map(String::from);
-
-    Ok(role)
 }

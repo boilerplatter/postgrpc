@@ -1,4 +1,5 @@
 use crate::{
+    get_role,
     pools::{Connection, Pool},
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
     protocol::{self, Parameter},
@@ -144,13 +145,7 @@ where
         request: Request<QueryRequest>,
     ) -> Result<Response<Self::QueryStream>, Status> {
         // derive a role from headers to use as a connection pool key
-        let role = request
-            .metadata()
-            .get("x-postgrpc-role")
-            .map(|role| role.to_str())
-            .transpose()
-            .map_err(|_| Status::invalid_argument("Invalid role in x-postgres-role header"))?
-            .map(String::from);
+        let role = get_role(&request)?;
 
         // create the row stream transmitter and receiver
         let (transmitter, receiver) = tokio::sync::mpsc::channel(100);
