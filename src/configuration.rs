@@ -1,11 +1,27 @@
-pub use envy::Error;
+use crate::pools::default::Pool;
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
 use serde::{Deserialize, Deserializer};
 use std::{
+    convert::TryFrom,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
+use thiserror::Error;
 
-/// Environment-derived configuration
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("No system cert found via OpenSSL probe")]
+    CertMissing,
+    #[error(transparent)]
+    Environment(#[from] envy::Error),
+    #[error("Error configuring the connection pool: {0}")]
+    Configuration(#[from] deadpool_postgres::config::ConfigError),
+    #[error("Error setting up TLS connection: {0}")]
+    Tls(#[from] openssl::error::ErrorStack),
+}
+
+/// Environment-derived configuration for the default pool
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
     /// service host IP address
@@ -34,7 +50,7 @@ pub struct Configuration {
 impl Configuration {
     /// Generate a new configuration from the environment
     pub fn new() -> Result<Self, Error> {
-        envy::from_env()
+        envy::from_env().map_err(Error::Environment)
     }
 }
 
@@ -74,5 +90,31 @@ where
 impl From<&Configuration> for SocketAddr {
     fn from(configuration: &Configuration) -> Self {
         SocketAddr::new(configuration.host, configuration.port)
+    }
+}
+
+/// Derive a default pool from this configuration
+impl TryFrom<Configuration> for Pool {
+    type Error = Error;
+
+    fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
+        // set up TLS connectors
+        let ssl = SslConnector::builder(SslMethod::tls())?;
+        let tls_connector = MakeTlsConnector::new(ssl.build());
+
+        // configure the underlying connection pool
+        let config = deadpool_postgres::Config {
+            dbname: Some(configuration.pgdbname),
+            host: Some(configuration.pghost.to_string()),
+            password: Some(configuration.pgpassword),
+            port: Some(configuration.pgport),
+            user: Some(configuration.pguser),
+            ..deadpool_postgres::Config::default()
+        };
+
+        // generate the pool from confiuration
+        let pool = config.create_pool(tls_connector)?;
+
+        Ok(Self::new(config, pool))
     }
 }

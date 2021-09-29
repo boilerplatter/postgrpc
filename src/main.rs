@@ -88,7 +88,7 @@ async fn run_service() -> Result<(), Error> {
         tracing::info!("Shutting down PostgRPC service");
     };
 
-    // configure the application service itself
+    // configure the application service with the default connection pool
     let address = SocketAddr::from(&configuration);
     let pool = pools::default::Pool::try_from(configuration).map(Arc::new)?;
     let reflection = tonic_reflection::server::Builder::configure()

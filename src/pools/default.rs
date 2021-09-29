@@ -1,21 +1,14 @@
 use super::{Connection, Parameter};
-use crate::{configuration::Configuration, protocol::json};
+use crate::protocol::json;
 use openssl::ssl::{SslConnector, SslMethod};
 use postgres_openssl::MakeTlsConnector;
-use std::{
-    convert::TryFrom,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 use thiserror::Error;
-use tokio_postgres::{error::SqlState, AsyncMessage, RowStream, Socket, Statement};
+use tokio_postgres::{error::SqlState, AsyncMessage, Notification, RowStream, Socket, Statement};
 use tonic::Status;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("No system cert found via OpenSSL probe")]
-    CertMissing,
-    #[error("Error configuring the connection pool: {0}")]
-    Configuration(#[from] deadpool_postgres::config::ConfigError),
     #[error("Expected {expected} parameters but found {actual} instead")]
     Params { expected: usize, actual: usize },
     #[error("Error parsing notification payload")]
@@ -24,6 +17,8 @@ pub enum Error {
     Pool(#[from] deadpool_postgres::PoolError),
     #[error("SQL Query error: {0}")]
     Query(#[from] tokio_postgres::Error),
+    #[error("Error configuring raw connection: {0}")]
+    RawConnection(#[from] deadpool_postgres::config::ConfigError),
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(Box<Error>),
     #[error("Error setting up TLS connection: {0}")]
@@ -37,10 +32,9 @@ impl From<Error> for Status {
         let message = format!("{}", &error);
 
         match error {
-            Error::CertMissing
-            | Error::Configuration(..)
-            | Error::Pool(..)
+            Error::Pool(..)
             | Error::Role(..)
+            | Error::RawConnection(..)
             | Error::Tls(..)
             | Error::Payload(..)
             | Error::Unimplemented => Self::internal(message),
@@ -58,28 +52,9 @@ pub struct Pool {
     pool: deadpool_postgres::Pool,
 }
 
-impl TryFrom<Configuration> for Pool {
-    type Error = Error;
-
-    fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
-        // set up TLS connectors
-        let ssl = SslConnector::builder(SslMethod::tls())?;
-        let tls_connector = MakeTlsConnector::new(ssl.build());
-
-        // configure the underlying connection pool
-        let config = deadpool_postgres::Config {
-            dbname: Some(configuration.pgdbname),
-            host: Some(configuration.pghost.to_string()),
-            password: Some(configuration.pgpassword),
-            port: Some(configuration.pgport),
-            user: Some(configuration.pguser),
-            ..deadpool_postgres::Config::default()
-        };
-
-        // generate the pool from confiuration
-        let pool = config.create_pool(tls_connector)?;
-
-        Ok(Self { config, pool })
+impl Pool {
+    pub fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool) -> Self {
+        Self { config, pool }
     }
 }
 
@@ -108,7 +83,10 @@ impl super::RawConnect<Option<String>> for Pool {
     type Client = tokio_postgres::Client;
     type RawConnection = RawConnection;
 
-    async fn connect(&self) -> Result<(Self::Client, Self::RawConnection), Self::Error> {
+    async fn connect(
+        &self,
+        _key: Option<String>, // unused in the default pool which uses a single set of connection credentials
+    ) -> Result<(Self::Client, Self::RawConnection), Self::Error> {
         let ssl = SslConnector::builder(SslMethod::tls())?;
         let tls_connector = MakeTlsConnector::new(ssl.build());
         let pg_config = self.config.get_pg_config()?;
@@ -117,21 +95,33 @@ impl super::RawConnect<Option<String>> for Pool {
     }
 }
 
+impl super::Message for Notification {
+    fn get_channel(&self) -> &str {
+        self.channel()
+    }
+
+    fn get_payload(&self) -> prost_types::Value {
+        let payload = self.payload();
+
+        serde_json::from_str(self.payload())
+            .map(json::to_proto_value)
+            .unwrap_or_else(|_| prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(payload.to_string())),
+            })
+    }
+}
+
 impl super::RawConnection for RawConnection {
-    type Message = AsyncMessage;
+    type Message = Notification;
     type Error = Error;
 
     fn poll_messages(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<Option<Result<prost_types::Value, Self::Error>>> {
+    ) -> Poll<Option<Result<Self::Message, Self::Error>>> {
         match self.poll_message(context) {
             Poll::Ready(Some(Ok(AsyncMessage::Notification(notification)))) => {
-                let value = serde_json::from_str(notification.payload())
-                    .map(json::to_proto_value)
-                    .map_err(Error::Payload);
-
-                Poll::Ready(Some(value))
+                Poll::Ready(Some(Ok(notification)))
             }
             Poll::Ready(Some(Ok(..))) | Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Query(error)))),
