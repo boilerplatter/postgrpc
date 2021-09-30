@@ -1,7 +1,7 @@
 use super::{Connection, Parameter};
 use crate::protocol::json;
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use std::task::{Context, Poll};
 use thiserror::Error;
 use tokio_postgres::{error::SqlState, AsyncMessage, Notification, RowStream, Socket, Statement};
@@ -22,7 +22,7 @@ pub enum Error {
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(Box<Error>),
     #[error("Error setting up TLS connection: {0}")]
-    Tls(#[from] openssl::error::ErrorStack),
+    Tls(#[from] native_tls::Error),
     #[error("Method is unimplemented on this client")]
     Unimplemented,
 }
@@ -76,7 +76,7 @@ impl super::Pool<Option<String>> for Pool {
     }
 }
 
-type RawConnection = tokio_postgres::Connection<Socket, postgres_openssl::TlsStream<Socket>>;
+type RawConnection = tokio_postgres::Connection<Socket, postgres_native_tls::TlsStream<Socket>>;
 
 #[tonic::async_trait]
 impl super::RawConnect<Option<String>> for Pool {
@@ -87,8 +87,8 @@ impl super::RawConnect<Option<String>> for Pool {
         &self,
         _key: Option<String>, // unused in the default pool which uses a single set of connection credentials
     ) -> Result<(Self::Client, Self::RawConnection), Self::Error> {
-        let ssl = SslConnector::builder(SslMethod::tls())?;
-        let tls_connector = MakeTlsConnector::new(ssl.build());
+        let connector = TlsConnector::builder().build()?;
+        let tls_connector = MakeTlsConnector::new(connector);
         let pg_config = self.config.get_pg_config()?;
         let connection_pair = pg_config.connect(tls_connector).await?;
         Ok(connection_pair)

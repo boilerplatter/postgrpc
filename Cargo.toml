@@ -21,8 +21,8 @@ tracing-subscriber = "0.2.18"
 tracing-futures = "0.2.5"
 futures = "0.3.17"
 thiserror = "1.0.29"
-postgres-openssl = "0.5.0"
-openssl = "0.10.36"
+native-tls = "0.2.8"
+postgres-native-tls = "0.5.0"
 
 [dependencies.serde]
 features = ["derive"]
@@ -49,6 +49,8 @@ version = "0.8.2"
 [dependencies.tokio-stream]
 features = ["sync"]
 version = "0.1.7"
+
+[features]
 
 # TODO: features
 # - connection pooling (on, off, and behavior tuning)

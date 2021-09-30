@@ -1,6 +1,6 @@
 use crate::pools::default::Pool;
-use openssl::ssl::{SslConnector, SslMethod};
-use postgres_openssl::MakeTlsConnector;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use serde::{Deserialize, Deserializer};
 use std::{
     convert::TryFrom,
@@ -18,7 +18,7 @@ pub enum Error {
     #[error("Error configuring the connection pool: {0}")]
     Configuration(#[from] deadpool_postgres::config::ConfigError),
     #[error("Error setting up TLS connection: {0}")]
-    Tls(#[from] openssl::error::ErrorStack),
+    Tls(#[from] native_tls::Error),
 }
 
 /// Environment-derived configuration for the default pool
@@ -99,8 +99,10 @@ impl TryFrom<Configuration> for Pool {
 
     fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
         // set up TLS connectors
-        let ssl = SslConnector::builder(SslMethod::tls())?;
-        let tls_connector = MakeTlsConnector::new(ssl.build());
+        // let ssl = SslConnector::builder(SslMethod::tls())?;
+        // let tls_connector = MakeTlsConnector::new(ssl.build());
+        let connector = TlsConnector::builder().build()?;
+        let tls_connector = MakeTlsConnector::new(connector);
 
         // configure the underlying connection pool
         let config = deadpool_postgres::Config {
