@@ -61,37 +61,6 @@ impl<'a> ToSql for Parameter<'a> {
 
 /// JSON-specific helpers converting between serde and prost structures
 pub mod json {
-    /// Convert a prost_types::Value into a serde_json::Value
-    pub fn from_proto_value(value: prost_types::Value) -> serde_json::Value {
-        let kind = match value.kind {
-            Some(kind) => kind,
-            None => return serde_json::Value::Null,
-        };
-
-        match kind {
-            prost_types::value::Kind::NullValue(..) => serde_json::Value::Null,
-            prost_types::value::Kind::BoolValue(boolean) => serde_json::Value::Bool(boolean),
-            prost_types::value::Kind::NumberValue(number) => {
-                match serde_json::Number::from_f64(number) {
-                    Some(number) => serde_json::Value::Number(number),
-                    None => serde_json::Value::String(number.to_string()),
-                }
-            }
-            prost_types::value::Kind::StringValue(string) => serde_json::Value::String(string),
-            prost_types::value::Kind::ListValue(prost_types::ListValue { values }) => {
-                serde_json::Value::Array(values.into_iter().map(from_proto_value).collect())
-            }
-            prost_types::value::Kind::StructValue(prost_types::Struct { fields }) => {
-                serde_json::Value::Object(
-                    fields
-                        .into_iter()
-                        .map(|(key, value)| (key, from_proto_value(value)))
-                        .collect(),
-                )
-            }
-        }
-    }
-
     /// Convert a serde_json::Value into a prost_types::Value
     pub fn to_proto_value(json: serde_json::Value) -> prost_types::Value {
         let kind = match json {
