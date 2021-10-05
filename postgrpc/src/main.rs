@@ -83,7 +83,7 @@ fn error_to_status(error: pools::default::Error) -> Status {
 /// Run the app in a Result-containd function
 async fn run_service() -> Result<(), Error> {
     // configure logging
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt::init();
 
     // handle SIGTERM-based termination gracefully
     let configuration: Configuration = envy::from_env()?;
@@ -110,7 +110,7 @@ async fn run_service() -> Result<(), Error> {
     let server = Server::builder()
         .trace_fn(|_| tracing::info_span!("postgrpc"))
         .add_service(reflection)
-        .add_service(HealthServer::new(Health))
+        .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
         .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))))
         .add_service(TransactionServer::new(Transaction::new(pool)))
         .serve_with_shutdown(address, shutdown);

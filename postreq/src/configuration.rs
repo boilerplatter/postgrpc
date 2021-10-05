@@ -1,4 +1,5 @@
 use crate::pools::default::Pool;
+// FIXME: make TLS configuration kind a feature
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use serde::{Deserialize, Deserializer};
@@ -43,6 +44,7 @@ pub struct Configuration {
     pub pgport: u16,
     /// User to use for database connections
     pub pguser: String,
+    // FIXME: add an SSLMODE
 }
 
 /// Generate a default "localhost" host value
@@ -90,8 +92,6 @@ impl TryFrom<Configuration> for Pool {
 
     fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
         // set up TLS connectors
-        // let ssl = SslConnector::builder(SslMethod::tls())?;
-        // let tls_connector = MakeTlsConnector::new(ssl.build());
         let connector = TlsConnector::builder().build()?;
         let tls_connector = MakeTlsConnector::new(connector);
 
@@ -104,6 +104,8 @@ impl TryFrom<Configuration> for Pool {
             user: Some(configuration.pguser),
             ..deadpool_postgres::Config::default()
         };
+
+        // FIXME: only use ssl connectors if an SSL_MODE configuration is used
 
         // generate the pool from confiuration
         let pool = config.create_pool(tls_connector)?;

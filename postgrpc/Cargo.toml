@@ -20,8 +20,6 @@ tracing-subscriber = "0.2.18"
 tracing-futures = "0.2.5"
 futures = "0.3.17"
 thiserror = "1.0.29"
-native-tls = "0.2.8"
-postgres-native-tls = "0.5.0"
 
 [dependencies.postreq]
 path = "../postreq"
