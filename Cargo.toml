@@ -1,57 +1,6 @@
-[package]
-name = "postgrpc"
-version = "0.1.0"
-authors = ["Alex Pearson <alex@platter.dev>"]
-edition = "2018"
+[workspace]
 
-[build-dependencies]
-tonic-build = "0.5.2"
-
-[dependencies]
-deadpool = "0.8.2"
-deadpool-postgres = "0.9.0"
-envy = "0.4.2"
-prost = "0.8.0"
-prost-types = "0.8.0"
-serde_json = "1.0.68"
-tonic-reflection = "0.2.0"
-tracing = "0.1.26"
-tracing-serde = "0.1.2"
-tracing-subscriber = "0.2.18"
-tracing-futures = "0.2.5"
-futures = "0.3.17"
-thiserror = "1.0.29"
-native-tls = "0.2.8"
-postgres-native-tls = "0.5.0"
-
-[dependencies.serde]
-features = ["derive"]
-version = "1.0.126"
-
-[dependencies.tokio]
-default-features = false
-features = ["macros", "signal", "sync", "rt-multi-thread"]
-version = "1.6.1"
-
-[dependencies.tokio-postgres]
-features = ["with-serde_json-1"]
-version = "0.7.2"
-
-[dependencies.tonic]
-default-features = false
-features = ["codegen", "prost", "transport"]
-version = "0.5.2"
-
-[dependencies.uuid]
-features = ["v4"]
-version = "0.8.2"
-
-[dependencies.tokio-stream]
-features = ["sync"]
-version = "0.1.7"
-
-[features]
-
-# TODO: features
-# - connection pooling (on, off, and behavior tuning)
-# - JWT-based auth/role-setting
+members = [
+  "postreq",
+  "postgrpc"
+]

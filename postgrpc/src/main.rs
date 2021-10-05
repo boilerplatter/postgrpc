@@ -1,6 +1,10 @@
-use configuration::Configuration;
 use health::Health;
-use postgres::Postgres;
+use postreq::{
+    configuration::{self, Configuration},
+    pools,
+    postgres::Postgres,
+    transaction::Transaction,
+};
 use proto::{
     health::health_server::HealthServer, postgres::postgres_server::PostgresServer,
     transaction::transaction_server::TransactionServer,
@@ -9,11 +13,8 @@ use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 use tonic::{transport::Server, Request, Status};
-use transaction::Transaction;
 
-mod configuration;
 mod health;
-mod pools;
 mod postgres;
 mod protocol;
 mod transaction;
@@ -35,8 +36,10 @@ mod proto {
 
 #[derive(Error, Debug)]
 enum Error {
-    #[error("Error reading configuration from environment: {0}")]
+    #[error(transparent)]
     Configuration(#[from] configuration::Error),
+    #[error("Error reading configuration from environment: {0}")]
+    Environment(#[from] envy::Error),
     #[error("Tracing error: {0}")]
     Logging(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error(transparent)]
@@ -62,13 +65,28 @@ fn get_role<T>(request: &Request<T>) -> Result<Option<String>, Status> {
     Ok(role)
 }
 
+/// map default pool errors to proper gRPC statuses
+fn error_to_status(error: pools::default::Error) -> Status {
+    let message = error.to_string();
+
+    match error {
+        pools::default::Error::Params { .. }
+        | pools::default::Error::Role(..)
+        | pools::default::Error::Query(..) => Status::invalid_argument(message),
+        pools::default::Error::Pool(..) => Status::resource_exhausted(message),
+        pools::default::Error::Tls(..) | pools::default::Error::InvalidJson => {
+            Status::internal(message)
+        }
+    }
+}
+
 /// Run the app in a Result-containd function
 async fn run_service() -> Result<(), Error> {
     // configure logging
     tracing_subscriber::fmt().init();
 
     // handle SIGTERM-based termination gracefully
-    let configuration = Configuration::new()?;
+    let configuration: Configuration = envy::from_env()?;
     let grace_period = configuration.termination_period;
     let mut termination = signal(SignalKind::terminate())?;
     let shutdown = async move {

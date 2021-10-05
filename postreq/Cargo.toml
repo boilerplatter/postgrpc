@@ -1,0 +1,50 @@
+[package]
+name = "postreq"
+version = "0.1.0"
+authors = ["Alex Pearson <alex@platter.dev>"]
+edition = "2018"
+description = "Request + Response interfaces for Postgres connection pools"
+
+[dependencies]
+deadpool = "0.8.2"
+deadpool-postgres = "0.9.0"
+serde_json = "1.0.68"
+tracing = "0.1.26"
+tracing-serde = "0.1.2"
+tracing-subscriber = "0.2.18"
+tracing-futures = "0.2.5"
+futures = "0.3.17"
+thiserror = "1.0.29"
+native-tls = "0.2.8"
+postgres-native-tls = "0.5.0"
+async-trait = "0.1.51"
+bytes = "1.1.0"
+pin-project-lite = "0.2.7"
+
+[dependencies.serde]
+features = ["derive"]
+version = "1.0.126"
+
+[dependencies.tokio]
+default-features = false
+features = ["signal", "sync"]
+version = "1.6.1"
+
+[dependencies.tokio-postgres]
+features = ["with-serde_json-1"]
+version = "0.7.2"
+
+[dependencies.uuid]
+features = ["v4"]
+version = "0.8.2"
+
+[dependencies.tokio-stream]
+features = ["sync"]
+version = "0.1.7"
+
+[features]
+
+# TODO: features
+# - TLS impls
+# - connection pooling (on, off, and behavior tuning)
+# - JSON return value format (prost versus serde_json, perhaps?)

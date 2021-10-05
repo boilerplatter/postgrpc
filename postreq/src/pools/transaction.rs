@@ -1,46 +1,25 @@
-use crate::{pools::Connection, protocol::Parameter};
+use crate::pools::Connection;
 use std::{
     collections::HashMap,
-    fmt,
     hash::Hash,
     sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tokio_postgres::RowStream;
-use tonic::Status;
 use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum Error<C>
 where
-    C: Into<Status> + std::error::Error + 'static,
+    C: std::error::Error + 'static,
 {
     #[error(transparent)]
     Connection(C),
     #[error("Error retrieving connection from transaction pool")]
     ConnectionFailure,
-    #[error("SQL Error: {0}")]
-    Query(#[from] tokio_postgres::Error),
     #[error("Requested transaction has not been initialized or was cleaned up due to inactivity")]
     Uninitialized,
-}
-
-impl<C> From<Error<C>> for Status
-where
-    C: Into<Status> + std::error::Error + 'static,
-{
-    fn from(error: Error<C>) -> Self {
-        let message = format!("{}", &error);
-
-        match error {
-            Error::Connection(error) => error.into(),
-            Error::ConnectionFailure => Self::resource_exhausted(message),
-            Error::Query(..) => Self::invalid_argument(message),
-            Error::Uninitialized => Self::not_found(message),
-        }
-    }
 }
 
 /// Polling interval in seconds for cleanup operations
@@ -90,12 +69,14 @@ where
     }
 }
 
-#[tonic::async_trait]
+#[async_trait::async_trait]
 impl<C> super::Connection for Transaction<C>
 where
     C: Connection + Send + Sync + 'static,
 {
     type Error = C::Error;
+    type Parameter = C::Parameter;
+    type RowStream = C::RowStream;
 
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
         self.connection.batch(query).await?;
@@ -107,8 +88,8 @@ where
     async fn query(
         &self,
         statement: &str,
-        parameters: &[Parameter],
-    ) -> Result<RowStream, Self::Error> {
+        parameters: &[Self::Parameter],
+    ) -> Result<Self::RowStream, Self::Error> {
         let rows = self.connection.query(statement, parameters).await?;
         let mut last_used_at = self.last_used_at.write().await;
         *last_used_at = Instant::now();
@@ -118,7 +99,7 @@ where
 
 /// Key for interacting with active transactions in the cache,
 /// checking access against the original connection pool key
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct TransactionKey<K>
 where
     K: Hash + Eq,
@@ -143,19 +124,19 @@ where
 pub type TransactionMap<K, C> = HashMap<TransactionKey<K>, Transaction<C>>;
 
 /// Pool of active transactions that wraps a lower-level Pool implementation
-pub struct Pool<P, K>
+pub struct Pool<P>
 where
-    K: Hash + Eq + Clone,
-    P: super::Pool<K>,
+    P: super::Pool,
+    P::Key: Hash + Eq + Clone,
 {
     pool: Arc<P>,
-    transactions: Arc<RwLock<TransactionMap<K, P::Connection>>>,
+    transactions: Arc<RwLock<TransactionMap<P::Key, P::Connection>>>,
 }
 
-impl<P, K> Clone for Pool<P, K>
+impl<P> Clone for Pool<P>
 where
-    K: Hash + Eq + Clone,
-    P: super::Pool<K>,
+    P: super::Pool,
+    P::Key: Hash + Eq + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -165,12 +146,12 @@ where
     }
 }
 
-impl<P, K> Pool<P, K>
+impl<P> Pool<P>
 where
-    K: Hash + Eq + Send + Sync + fmt::Debug + Clone + 'static,
-    P: super::Pool<K> + Send + Sync + 'static,
-    P::Connection: Send + Sync + 'static,
-    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
+    P: super::Pool + 'static,
+    P::Key: Hash + Eq + Send + Sync + Clone + 'static,
+    P::Connection: 'static,
+    <P::Connection as Connection>::Error: Send + Sync + 'static,
 {
     /// Initialize a new shared transaction pool
     pub fn new(pool: Arc<P>) -> Self {
@@ -225,7 +206,10 @@ where
 
     /// Begin a transaction, storing the associated connection in the cache
     #[tracing::instrument(skip(self))]
-    pub async fn begin(&self, key: K) -> Result<Uuid, Error<<P::Connection as Connection>::Error>> {
+    pub async fn begin(
+        &self,
+        key: P::Key,
+    ) -> Result<Uuid, Error<<P::Connection as Connection>::Error>> {
         // generate a unique transaction ID to be included in subsequent requests
         let transaction_id = Uuid::new_v4();
 
@@ -264,7 +248,7 @@ where
     pub async fn commit(
         &self,
         transaction_id: Uuid,
-        key: K,
+        key: P::Key,
     ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Committing active transaction");
 
@@ -283,7 +267,7 @@ where
     pub async fn rollback(
         &self,
         transaction_id: Uuid,
-        key: K,
+        key: P::Key,
     ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Rolling back active transaction");
 
@@ -300,7 +284,7 @@ where
     async fn remove(
         &self,
         transaction_id: Uuid,
-        key: K,
+        key: P::Key,
     ) -> Result<Transaction<P::Connection>, Error<<P::Connection as Connection>::Error>> {
         tracing::info!("Removing transaction from the cache");
 
@@ -318,21 +302,19 @@ where
     }
 }
 
-#[tonic::async_trait]
-impl<P, K> super::Pool<TransactionKey<K>> for Pool<P, K>
+#[async_trait::async_trait]
+impl<P> super::Pool for Pool<P>
 where
-    K: Hash + Eq + Send + Sync + Clone,
-    P: super::Pool<K> + Send + Sync,
-    P::Connection: Send + Sync + 'static,
-    <P::Connection as Connection>::Error: std::error::Error + Send + Sync + 'static,
+    P: super::Pool,
+    P::Key: Hash + Eq + Send + Sync + Clone,
+    P::Connection: 'static,
+    <P::Connection as Connection>::Error: Send + Sync + 'static,
 {
+    type Key = TransactionKey<P::Key>;
     type Connection = Transaction<P::Connection>;
-    type Error = Error<<P::Connection as Connection>::Error>;
+    type Error = Error<<Self::Connection as Connection>::Error>;
 
-    async fn get_connection(
-        &self,
-        key: TransactionKey<K>,
-    ) -> Result<Self::Connection, Self::Error> {
+    async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
         let transaction = self
             .transactions
             .read()

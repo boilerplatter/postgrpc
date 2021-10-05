@@ -13,8 +13,6 @@ use thiserror::Error;
 pub enum Error {
     #[error("No system cert found via OpenSSL probe")]
     CertMissing,
-    #[error(transparent)]
-    Environment(#[from] envy::Error),
     #[error("Error configuring the connection pool: {0}")]
     Configuration(#[from] deadpool_postgres::config::ConfigError),
     #[error("Error setting up TLS connection: {0}")]
@@ -45,13 +43,6 @@ pub struct Configuration {
     pub pgport: u16,
     /// User to use for database connections
     pub pguser: String,
-}
-
-impl Configuration {
-    /// Generate a new configuration from the environment
-    pub fn new() -> Result<Self, Error> {
-        envy::from_env().map_err(Error::Environment)
-    }
 }
 
 /// Generate a default "localhost" host value
