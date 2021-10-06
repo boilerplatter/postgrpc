@@ -1,7 +1,4 @@
 use crate::pools::default::Pool;
-// FIXME: make TLS configuration kind a feature
-use native_tls::TlsConnector;
-use postgres_native_tls::MakeTlsConnector;
 use serde::{Deserialize, Deserializer};
 use std::{
     convert::TryFrom,
@@ -10,12 +7,18 @@ use std::{
 };
 use thiserror::Error;
 
+#[cfg(feature = "ssl-native-tls")]
+use native_tls::TlsConnector;
+#[cfg(feature = "ssl-native-tls")]
+use postgres_native_tls::MakeTlsConnector;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("No system cert found via OpenSSL probe")]
     CertMissing,
     #[error("Error configuring the connection pool: {0}")]
     Configuration(#[from] deadpool_postgres::config::ConfigError),
+    #[cfg(feature = "ssl-native-tls")]
     #[error("Error setting up TLS connection: {0}")]
     Tls(#[from] native_tls::Error),
 }
@@ -44,7 +47,6 @@ pub struct Configuration {
     pub pgport: u16,
     /// User to use for database connections
     pub pguser: String,
-    // FIXME: add an SSLMODE
 }
 
 /// Generate a default "localhost" host value
@@ -92,8 +94,12 @@ impl TryFrom<Configuration> for Pool {
 
     fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
         // set up TLS connectors
+        #[cfg(feature = "ssl-native-tls")]
         let connector = TlsConnector::builder().build()?;
+        #[cfg(feature = "ssl-native-tls")]
         let tls_connector = MakeTlsConnector::new(connector);
+        #[cfg(not(feature = "ssl-native-tls"))]
+        let tls_connector = tokio_postgres::NoTls;
 
         // configure the underlying connection pool
         let config = deadpool_postgres::Config {
@@ -104,8 +110,6 @@ impl TryFrom<Configuration> for Pool {
             user: Some(configuration.pguser),
             ..deadpool_postgres::Config::default()
         };
-
-        // FIXME: only use ssl connectors if an SSL_MODE configuration is used
 
         // generate the pool from confiuration
         let pool = config.create_pool(tls_connector)?;

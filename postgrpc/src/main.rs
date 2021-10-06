@@ -74,9 +74,7 @@ fn error_to_status(error: pools::default::Error) -> Status {
         | pools::default::Error::Role(..)
         | pools::default::Error::Query(..) => Status::invalid_argument(message),
         pools::default::Error::Pool(..) => Status::resource_exhausted(message),
-        pools::default::Error::Tls(..) | pools::default::Error::InvalidJson => {
-            Status::internal(message)
-        }
+        pools::default::Error::InvalidJson => Status::internal(message),
     }
 }
 

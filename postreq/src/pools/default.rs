@@ -22,8 +22,6 @@ pub enum Error {
     Query(#[from] tokio_postgres::Error),
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(tokio_postgres::Error),
-    #[error("Error setting up TLS connection: {0}")]
-    Tls(#[from] native_tls::Error),
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
 }

@@ -51,7 +51,10 @@ features = ["sync"]
 version = "0.1.7"
 
 [features]
+default = ["ssl-native-tls"]
+ssl-native-tls = ["postreq/ssl-native-tls"]
 
 # TODO: features
-# - connection pooling (on, off, and behavior tuning)
-# - JWT-based auth/role-setting
+# - header parsing (X-postgres-role)
+# - connection pooling (choose between implementations)
+# - service-level features (postgres + transactions + channels)

@@ -11,15 +11,21 @@ bytes = "1.1.0"
 deadpool = "0.8.2"
 deadpool-postgres = "0.9.0"
 futures = "0.3.17"
-native-tls = "0.2.8"
 pin-project-lite = "0.2.7"
-postgres-native-tls = "0.5.0"
 serde_json = "1.0.68"
 tracing = "0.1.26"
 tracing-serde = "0.1.2"
 tracing-subscriber = "0.2.18"
 tracing-futures = "0.2.5"
 thiserror = "1.0.29"
+
+[dependencies.native-tls]
+optional = true
+version = "0.2.8"
+
+[dependencies.postgres-native-tls]
+optional = true
+version = "0.5.0"
 
 [dependencies.serde]
 features = ["derive"]
@@ -39,6 +45,8 @@ version = "0.8.2"
 
 [features]
 
+default = []
+ssl-native-tls = ["native-tls", "postgres-native-tls"]
 # TODO: features
 # - TLS impls
 # - connection pooling (on, off, and behavior tuning)
