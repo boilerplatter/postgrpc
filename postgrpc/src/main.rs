@@ -69,7 +69,7 @@ fn error_to_status(error: postgres_role_json_pool::Error) -> Status {
     }
 }
 
-/// Run the app in a Result-containd function
+/// Run the app in a Result-contained function
 async fn run_service() -> Result<(), Error> {
     // configure logging
     tracing_subscriber::fmt::init();
