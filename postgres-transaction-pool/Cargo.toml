@@ -1,0 +1,24 @@
+[package]
+name = "postgres-transaction-pool"
+version = "0.1.0"
+authors = ["Alex Pearson <alex@platter.dev>"]
+edition = "2018"
+description = "Distributed transaction pool for Postgres"
+
+[dependencies]
+async-trait = "0.1.51"
+futures-core = "0.3.17"
+thiserror = "1.0.29"
+tracing = "0.1.26"
+
+[dependencies.postgres-pool]
+path = "../postgres-pool"
+
+[dependencies.tokio]
+default-features = false
+features = ["sync"]
+version = "1.6.1"
+
+[dependencies.uuid]
+features = ["v4"]
+version = "0.8.2"

@@ -842,6 +842,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgres-pool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-core",
+]
+
+[[package]]
 name = "postgres-protocol"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -857,6 +865,50 @@ dependencies = [
  "rand",
  "sha2",
  "stringprep",
+]
+
+[[package]]
+name = "postgres-role-json-pool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "deadpool",
+ "deadpool-postgres",
+ "futures-core",
+ "native-tls",
+ "pin-project-lite",
+ "postgres-native-tls",
+ "postgres-pool",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
+name = "postgres-services"
+version = "0.1.0"
+dependencies = [
+ "postgres-pool",
+ "postgres-transaction-pool",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "postgres-transaction-pool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "postgres-pool",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -877,46 +929,22 @@ name = "postgrpc"
 version = "0.1.0"
 dependencies = [
  "envy",
- "futures",
- "postreq",
+ "futures-util",
+ "postgres-pool",
+ "postgres-role-json-pool",
+ "postgres-services",
+ "postgres-transaction-pool",
  "prost",
  "prost-types",
- "serde",
  "serde_json",
  "thiserror",
  "tokio",
- "tokio-postgres",
  "tokio-stream",
  "tonic",
  "tonic-build",
  "tonic-reflection",
  "tracing",
  "tracing-futures",
- "tracing-serde",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "postreq"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "deadpool",
- "deadpool-postgres",
- "futures",
- "native-tls",
- "pin-project-lite",
- "postgres-native-tls",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-postgres",
- "tracing",
- "tracing-futures",
- "tracing-serde",
  "tracing-subscriber",
  "uuid",
 ]
@@ -1398,7 +1426,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

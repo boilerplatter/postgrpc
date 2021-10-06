@@ -3,15 +3,16 @@ use crate::{
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
     protocol::{json, parameter},
 };
-use futures::{pin_mut, StreamExt, TryStreamExt};
-use postreq::postgres::Postgres;
+use futures_util::{pin_mut, StreamExt, TryStreamExt};
+use postgres_role_json_pool::Pool;
+use postgres_services::postgres::Postgres;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 /// gRPC service implementation for Postgres service using the default pool
 #[tonic::async_trait]
-impl GrpcService for Postgres {
+impl GrpcService for Postgres<Pool> {
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 
     #[tracing::instrument(skip(self))]

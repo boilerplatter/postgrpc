@@ -1,0 +1,22 @@
+[package]
+name = "postgres-services"
+version = "0.1.0"
+authors = ["Alex Pearson <alex@platter.dev>"]
+edition = "2018"
+description = "Request + Response interfaces for Postgres connection pools"
+
+[dependencies]
+tracing = "0.1.26"
+thiserror = "1.0.29"
+uuid = "0.8.2"
+
+[dependencies.postgres-transaction-pool]
+optional = true
+path = "../postgres-transaction-pool"
+
+[dependencies.postgres-pool]
+path = "../postgres-pool"
+
+[features]
+default = []
+transaction = ["postgres-transaction-pool"]

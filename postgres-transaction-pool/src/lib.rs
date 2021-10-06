@@ -1,4 +1,4 @@
-use crate::pools::Connection;
+use postgres_pool::Connection;
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -70,7 +70,7 @@ where
 }
 
 #[async_trait::async_trait]
-impl<C> super::Connection for Transaction<C>
+impl<C> Connection for Transaction<C>
 where
     C: Connection + Send + Sync + 'static,
 {
@@ -100,7 +100,7 @@ where
 /// Key for interacting with active transactions in the cache,
 /// checking access against the original connection pool key
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-pub struct TransactionKey<K>
+pub struct Key<K>
 where
     K: Hash + Eq,
 {
@@ -108,7 +108,7 @@ where
     transaction_id: Uuid,
 }
 
-impl<K> TransactionKey<K>
+impl<K> Key<K>
 where
     K: Hash + Eq,
 {
@@ -121,12 +121,12 @@ where
 }
 
 /// Type alias for the internal map of shared transactions
-pub type TransactionMap<K, C> = HashMap<TransactionKey<K>, Transaction<C>>;
+pub type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
 
 /// Pool of active transactions that wraps a lower-level Pool implementation
 pub struct Pool<P>
 where
-    P: super::Pool,
+    P: postgres_pool::Pool,
     P::Key: Hash + Eq + Clone,
 {
     pool: Arc<P>,
@@ -135,7 +135,7 @@ where
 
 impl<P> Clone for Pool<P>
 where
-    P: super::Pool,
+    P: postgres_pool::Pool,
     P::Key: Hash + Eq + Clone,
 {
     fn clone(&self) -> Self {
@@ -148,7 +148,7 @@ where
 
 impl<P> Pool<P>
 where
-    P: super::Pool + 'static,
+    P: postgres_pool::Pool + 'static,
     P::Key: Hash + Eq + Send + Sync + Clone + 'static,
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + 'static,
@@ -215,7 +215,7 @@ where
 
         tracing::info!(transaction = %&transaction_id, "Beginning transaction");
 
-        let transaction_key = TransactionKey {
+        let transaction_key = Key {
             key: key.clone(),
             transaction_id,
         };
@@ -292,7 +292,7 @@ where
             .transactions
             .write()
             .await
-            .remove(&TransactionKey {
+            .remove(&Key {
                 key,
                 transaction_id,
             })
@@ -303,14 +303,14 @@ where
 }
 
 #[async_trait::async_trait]
-impl<P> super::Pool for Pool<P>
+impl<P> postgres_pool::Pool for Pool<P>
 where
-    P: super::Pool,
+    P: postgres_pool::Pool,
     P::Key: Hash + Eq + Send + Sync + Clone,
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + 'static,
 {
-    type Key = TransactionKey<P::Key>;
+    type Key = Key<P::Key>;
     type Connection = Transaction<P::Connection>;
     type Error = Error<<Self::Connection as Connection>::Error>;
 

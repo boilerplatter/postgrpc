@@ -2,8 +2,8 @@ use crate::proto::health::{
     health_check_response::ServingStatus, health_server::Health as GrpcService, HealthCheckRequest,
     HealthCheckResponse,
 };
-use futures::{pin_mut, stream, StreamExt, TryFutureExt};
-use postreq::pools::{Connection, Pool};
+use futures_util::{pin_mut, stream, StreamExt, TryFutureExt};
+use postgres_pool::{Connection, Pool};
 use std::{sync::Arc, time::Duration};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Request, Response, Status};

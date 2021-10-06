@@ -1,14 +1,14 @@
 use health::Health;
-use postreq::{
+use postgres_role_json_pool::{
     configuration::{self, Configuration},
-    pools,
-    postgres::Postgres,
-    transaction::Transaction,
+    Pool,
 };
-use proto::{
-    health::health_server::HealthServer, postgres::postgres_server::PostgresServer,
-    transaction::transaction_server::TransactionServer,
-};
+use postgres_services::postgres::Postgres;
+#[cfg(feature = "transaction")]
+use postgres_services::transaction::Transaction;
+#[cfg(feature = "transaction")]
+use proto::transaction::transaction_server::TransactionServer;
+use proto::{health::health_server::HealthServer, postgres::postgres_server::PostgresServer};
 use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
@@ -17,6 +17,7 @@ use tonic::{transport::Server, Request, Status};
 mod health;
 mod postgres;
 mod protocol;
+#[cfg(feature = "transaction")]
 mod transaction;
 mod proto {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("routes");
@@ -25,6 +26,7 @@ mod proto {
         tonic::include_proto!("postgres");
     }
 
+    #[cfg(feature = "transaction")]
     pub mod transaction {
         tonic::include_proto!("transaction");
     }
@@ -43,7 +45,7 @@ enum Error {
     #[error("Tracing error: {0}")]
     Logging(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error(transparent)]
-    Pool(#[from] pools::default::Error),
+    Pool(#[from] postgres_role_json_pool::Error),
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
     #[error("Error setting up SIGTERM handler: {0}")]
@@ -66,15 +68,15 @@ fn get_role<T>(request: &Request<T>) -> Result<Option<String>, Status> {
 }
 
 /// map default pool errors to proper gRPC statuses
-fn error_to_status(error: pools::default::Error) -> Status {
+fn error_to_status(error: postgres_role_json_pool::Error) -> Status {
     let message = error.to_string();
 
     match error {
-        pools::default::Error::Params { .. }
-        | pools::default::Error::Role(..)
-        | pools::default::Error::Query(..) => Status::invalid_argument(message),
-        pools::default::Error::Pool(..) => Status::resource_exhausted(message),
-        pools::default::Error::InvalidJson => Status::internal(message),
+        postgres_role_json_pool::Error::Params { .. }
+        | postgres_role_json_pool::Error::Role(..)
+        | postgres_role_json_pool::Error::Query(..) => Status::invalid_argument(message),
+        postgres_role_json_pool::Error::Pool(..) => Status::resource_exhausted(message),
+        postgres_role_json_pool::Error::InvalidJson => Status::internal(message),
     }
 }
 
@@ -98,9 +100,9 @@ async fn run_service() -> Result<(), Error> {
         tracing::info!("Shutting down PostgRPC service");
     };
 
-    // configure the application service with the default connection pool
+    // configure the application service with the connection pool
     let address = SocketAddr::from(&configuration);
-    let pool = pools::default::Pool::try_from(configuration).map(Arc::new)?;
+    let pool = Pool::try_from(configuration).map(Arc::new)?;
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
         .build()?;
@@ -109,13 +111,18 @@ async fn run_service() -> Result<(), Error> {
         .trace_fn(|_| tracing::info_span!("postgrpc"))
         .add_service(reflection)
         .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
-        .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))))
-        .add_service(TransactionServer::new(Transaction::new(pool)))
-        .serve_with_shutdown(address, shutdown);
+        .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))));
 
     tracing::info!(address = %&address, "PostgRPC service starting");
 
-    server.await?;
+    #[cfg(feature = "transaction")]
+    server
+        .add_service(TransactionServer::new(Transaction::new(pool)))
+        .serve_with_shutdown(address, shutdown)
+        .await?;
+
+    #[cfg(not(feature = "transaction"))]
+    server.serve_with_shutdown(address, shutdown).await?;
 
     tracing::info!(address = %&address, "PostgRPC service stopped");
 

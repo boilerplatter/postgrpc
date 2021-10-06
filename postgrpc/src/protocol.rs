@@ -1,6 +1,6 @@
 /// Parameter helpers for converting from prost structures
 pub mod parameter {
-    use postreq::pools::default::Parameter;
+    use postgres_role_json_pool::Parameter;
     use prost_types::value::Kind;
 
     /// convert proto JSON values to scalar parameters

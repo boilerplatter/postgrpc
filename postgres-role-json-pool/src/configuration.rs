@@ -1,4 +1,4 @@
-use crate::pools::default::Pool;
+use super::Pool;
 use serde::{Deserialize, Deserializer};
 use std::{
     convert::TryFrom,

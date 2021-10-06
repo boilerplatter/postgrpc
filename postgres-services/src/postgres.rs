@@ -1,9 +1,9 @@
-use crate::pools::{self, Connection, Pool};
+use postgres_pool::{Connection, Pool};
 use std::sync::Arc;
 
 /// Protocol-agnostic Postgres handlers for any connection pool
 #[derive(Clone)]
-pub struct Postgres<P = pools::default::Pool> {
+pub struct Postgres<P> {
     pool: Arc<P>,
 }
 

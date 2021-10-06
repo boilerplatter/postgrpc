@@ -1,18 +1,19 @@
-use crate::pools::{self, transaction, Connection, Pool};
+use postgres_pool::{Connection, Pool};
 use std::{hash::Hash, sync::Arc};
 use uuid::Uuid;
 
 /// Type alias representing a bubbled-up error from the transaction pool
-pub type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
+pub type Error<P> =
+    postgres_transaction_pool::Error<<<P as Pool>::Connection as Connection>::Error>;
 
 /// Protocol-agnostic Transaction handlers for any connection pool
 #[derive(Clone)]
-pub struct Transaction<P = pools::default::Pool>
+pub struct Transaction<P>
 where
     P: Pool,
     P::Key: Hash + Eq + Clone,
 {
-    pool: transaction::Pool<P>,
+    pool: postgres_transaction_pool::Pool<P>,
 }
 
 impl<P> Transaction<P>
@@ -24,7 +25,7 @@ where
 {
     pub fn new(pool: Arc<P>) -> Self {
         Self {
-            pool: transaction::Pool::new(pool),
+            pool: postgres_transaction_pool::Pool::new(pool),
         }
     }
 
@@ -47,7 +48,7 @@ where
     ) -> Result<<P::Connection as Connection>::RowStream, Error<P>> {
         tracing::info!("Querying transaction");
 
-        let transaction_key = transaction::TransactionKey::new(key, id);
+        let transaction_key = postgres_transaction_pool::Key::new(key, id);
 
         let rows = self
             .pool
@@ -55,7 +56,7 @@ where
             .await?
             .query(statement, &parameters)
             .await
-            .map_err(transaction::Error::Connection)?;
+            .map_err(postgres_transaction_pool::Error::Connection)?;
 
         Ok(rows)
     }

@@ -1,6 +1,6 @@
-use super::Connection;
-use futures::{ready, Stream};
+use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
+use postgres_pool::Connection;
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -11,6 +11,8 @@ use tokio_postgres::{
     types::{to_sql_checked, IsNull, ToSql, Type},
     RowStream, Statement,
 };
+
+pub mod configuration;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -45,9 +47,9 @@ impl Pool {
 }
 
 #[async_trait::async_trait]
-impl super::Pool for Pool {
+impl postgres_pool::Pool for Pool {
     type Key = Role;
-    type Connection = deadpool_postgres::Client;
+    type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
 
     async fn get_connection(&self, key: Option<String>) -> Result<Self::Connection, Self::Error> {
@@ -63,7 +65,7 @@ impl super::Pool for Pool {
             .await
             .map_err(Error::Role)?;
 
-        Ok(connection)
+        Ok(Client(connection))
     }
 }
 
@@ -100,8 +102,11 @@ impl From<RowStream> for JsonStream {
     }
 }
 
+/// Newtype wrapper around the client provided by deadpool_postgres
+pub struct Client(deadpool_postgres::Client);
+
 #[async_trait::async_trait]
-impl Connection for deadpool_postgres::Client {
+impl Connection for Client {
     type Error = Error;
     type Parameter = Parameter;
     type RowStream = JsonStream;
@@ -111,7 +116,7 @@ impl Connection for deadpool_postgres::Client {
         statement: &str,
         parameters: &[Self::Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
-        let prepared_statement = self.prepare_cached(statement).await?;
+        let prepared_statement = self.0.prepare_cached(statement).await?;
 
         // check parameter count to avoid panics
         let inferred_types = prepared_statement.params();
@@ -128,7 +133,7 @@ impl Connection for deadpool_postgres::Client {
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
 
-                self.statement_cache.remove(statement, inferred_types);
+                self.0.statement_cache.remove(statement, inferred_types);
 
                 query_raw(self, statement, &prepared_statement, parameters).await
             }
@@ -139,7 +144,7 @@ impl Connection for deadpool_postgres::Client {
     }
 
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
-        self.batch_execute(query).await?;
+        self.0.batch_execute(query).await?;
 
         Ok(())
     }
@@ -147,14 +152,14 @@ impl Connection for deadpool_postgres::Client {
 
 /// Wrapper around a raw query that can be retried
 async fn query_raw(
-    client: &deadpool_postgres::Client,
+    client: &Client,
     statement: &str,
     prepared_statement: &Statement,
     parameters: &[Parameter],
 ) -> Result<RowStream, Error> {
     let rows = if prepared_statement.columns().is_empty() {
         // execute statements that return no data without modification
-        client.query_raw(prepared_statement, parameters).await?
+        client.0.query_raw(prepared_statement, parameters).await?
     } else {
         // wrap queries that return data in to_json()
         let json_statement = format!(
@@ -162,9 +167,9 @@ async fn query_raw(
             &statement
         );
 
-        let prepared_statement = client.prepare_cached(&json_statement).await?;
+        let prepared_statement = client.0.prepare_cached(&json_statement).await?;
 
-        client.query_raw(&prepared_statement, parameters).await?
+        client.0.query_raw(&prepared_statement, parameters).await?
     };
 
     Ok(rows)

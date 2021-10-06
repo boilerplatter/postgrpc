@@ -1,0 +1,10 @@
+[package]
+name = "postgres-pool"
+version = "0.1.0"
+authors = ["Alex Pearson <alex@platter.dev>"]
+edition = "2018"
+description = "Keyed connection pool traits for databases"
+
+[dependencies]
+async-trait = "0.1.51"
+futures-core = "0.3.17"

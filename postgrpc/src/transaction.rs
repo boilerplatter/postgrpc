@@ -6,27 +6,30 @@ use crate::{
     },
     protocol::{json, parameter},
 };
-use futures::{pin_mut, StreamExt, TryStreamExt};
-use postreq::{pools, transaction::Transaction};
+use futures_util::{pin_mut, StreamExt, TryStreamExt};
+use postgres_role_json_pool::Pool;
+use postgres_services::transaction::Transaction;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 /// map transaction pool errors to proper gRPC statuses
-fn transaction_error_to_status(error: pools::transaction::Error<pools::default::Error>) -> Status {
+fn transaction_error_to_status(
+    error: postgres_transaction_pool::Error<postgres_role_json_pool::Error>,
+) -> Status {
     let message = error.to_string();
 
     match error {
-        pools::transaction::Error::ConnectionFailure => Status::resource_exhausted(message),
-        pools::transaction::Error::Uninitialized => Status::failed_precondition(message),
-        pools::transaction::Error::Connection(error) => error_to_status(error),
+        postgres_transaction_pool::Error::ConnectionFailure => Status::resource_exhausted(message),
+        postgres_transaction_pool::Error::Uninitialized => Status::failed_precondition(message),
+        postgres_transaction_pool::Error::Connection(error) => error_to_status(error),
     }
 }
 
 /// gRPC service implementation for Transaction service
 #[tonic::async_trait]
-impl GrpcService for Transaction {
+impl GrpcService for Transaction<Pool> {
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 
     #[tracing::instrument(skip(self))]

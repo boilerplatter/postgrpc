@@ -3,58 +3,53 @@ name = "postgrpc"
 version = "0.1.0"
 authors = ["Alex Pearson <alex@platter.dev>"]
 edition = "2018"
-description = "A gRPC and JSON server for querying Postgres connection pools without needing a direct connection"
+description = "A JSON-transcoding-ready gRPC server for querying Postgres"
 
 [build-dependencies]
 tonic-build = "0.5.2"
 
 [dependencies]
 envy = "0.4.2"
+futures-util = "0.3.17"
 prost = "0.8.0"
 prost-types = "0.8.0"
 serde_json = "1.0.68"
+thiserror = "1.0.29"
+tokio-stream = "0.1.7"
 tonic-reflection = "0.2.0"
 tracing = "0.1.26"
-tracing-serde = "0.1.2"
 tracing-subscriber = "0.2.18"
 tracing-futures = "0.2.5"
-futures = "0.3.17"
-thiserror = "1.0.29"
+uuid = "0.8.2"
 
-[dependencies.postreq]
-path = "../postreq"
+[dependencies.postgres-pool]
+path = "../postgres-pool"
 
-[dependencies.serde]
-features = ["derive"]
-version = "1.0.126"
+[dependencies.postgres-role-json-pool]
+path = "../postgres-role-json-pool"
+
+[dependencies.postgres-services]
+path = "../postgres-services"
+
+[dependencies.postgres-transaction-pool]
+optional = true
+path = "../postgres-transaction-pool"
 
 [dependencies.tokio]
 default-features = false
-features = ["macros", "signal", "sync", "rt-multi-thread"]
+features = ["macros", "signal", "rt-multi-thread"]
 version = "1.6.1"
-
-[dependencies.tokio-postgres]
-features = ["with-serde_json-1"]
-version = "0.7.2"
 
 [dependencies.tonic]
 default-features = false
 features = ["codegen", "prost", "transport"]
 version = "0.5.2"
 
-[dependencies.uuid]
-features = ["v4"]
-version = "0.8.2"
-
-[dependencies.tokio-stream]
-features = ["sync"]
-version = "0.1.7"
-
 [features]
-default = ["ssl-native-tls"]
-ssl-native-tls = ["postreq/ssl-native-tls"]
+default = ["transaction", "ssl-native-tls"]
+transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
+ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
 
 # TODO: features
 # - header parsing (X-postgres-role)
 # - connection pooling (choose between implementations)
-# - service-level features (postgres + transactions + channels)

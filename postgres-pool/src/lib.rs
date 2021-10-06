@@ -1,8 +1,5 @@
-use futures::TryStream;
+use futures_core::TryStream;
 use std::fmt;
-
-pub mod default;
-pub mod transaction;
 
 /// Connection behavior across abstract database connection types
 #[async_trait::async_trait]
