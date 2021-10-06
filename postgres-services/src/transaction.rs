@@ -23,12 +23,14 @@ where
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + 'static,
 {
+    /// Create a new Postgres transaction service from a reference-counted Pool
     pub fn new(pool: Arc<P>) -> Self {
         Self {
             pool: postgres_transaction_pool::Pool::new(pool),
         }
     }
 
+    /// Begin a Postgres transaction, returning a unique ID for the transaction
     #[tracing::instrument(skip(self))]
     pub async fn begin(&self, key: P::Key) -> Result<Uuid, Error<P>> {
         tracing::info!("Beginning transaction");
@@ -38,6 +40,7 @@ where
         Ok(transaction_id)
     }
 
+    /// Query an active Postgres transaction by ID and connection pool key
     #[tracing::instrument(skip(self))]
     pub async fn query(
         &self,
@@ -61,6 +64,7 @@ where
         Ok(rows)
     }
 
+    /// Commit an active Postgres transaction by ID and connection pool key
     #[tracing::instrument(skip(self))]
     pub async fn commit(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
         tracing::info!("Committing transaction");
@@ -70,6 +74,7 @@ where
         Ok(())
     }
 
+    /// Roll back an active Postgres transaction by ID and connection pool key
     #[tracing::instrument(skip(self))]
     pub async fn rollback(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
         tracing::info!("Rolling back transaction");

@@ -12,10 +12,12 @@ where
     P: Pool,
     P::Error: From<<P::Connection as Connection>::Error>,
 {
+    /// Create a new Postgres service from a reference-counted Pool
     pub fn new(pool: Arc<P>) -> Self {
         Self { pool }
     }
 
+    /// Query a Postgres database
     #[tracing::instrument(skip(self))]
     pub async fn query(
         &self,

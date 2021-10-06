@@ -16,7 +16,7 @@ path = "../postgres-pool"
 
 [dependencies.tokio]
 default-features = false
-features = ["sync"]
+features = ["rt", "sync", "time"]
 version = "1.6.1"
 
 [dependencies.uuid]
