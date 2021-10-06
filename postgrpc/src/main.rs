@@ -9,13 +9,14 @@ use postgres_services::transaction::Transaction;
 #[cfg(feature = "transaction")]
 use proto::transaction::transaction_server::TransactionServer;
 use proto::{health::health_server::HealthServer, postgres::postgres_server::PostgresServer};
-use std::{convert::TryFrom, net::SocketAddr, sync::Arc, time::Duration};
+use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
-use tonic::{codegen::http::Request as HttpRequest, transport::Server, Code, Request, Status};
-use tower_http::{classify::GrpcFailureClass, trace::TraceLayer};
+use tonic::{transport::Server, Status};
 
+mod extensions;
 mod health;
+mod logging;
 mod postgres;
 mod protocol;
 #[cfg(feature = "transaction")]
@@ -53,19 +54,6 @@ enum Error {
     SigTerm(#[from] std::io::Error),
     #[error("Error in gRPC transport: {0}")]
     Transport(#[from] tonic::transport::Error),
-}
-
-/// derive a role from headers to use as a connection pool key
-fn get_role<T>(request: &Request<T>) -> Result<Option<String>, Status> {
-    let role = request
-        .metadata()
-        .get("x-postgrpc-role")
-        .map(|role| role.to_str())
-        .transpose()
-        .map_err(|_| Status::invalid_argument("Invalid role in x-postgres-role header"))?
-        .map(String::from);
-
-    Ok(role)
 }
 
 /// map default pool errors to proper gRPC statuses
@@ -113,51 +101,24 @@ async fn run_service() -> Result<(), Error> {
         .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
         .build()?;
 
-    // set up logging middleware layer
-    let logging = TraceLayer::new_for_grpc()
-        .make_span_with(|request: &HttpRequest<_>| {
-            tracing::debug_span!(
-                "postgrpc",
-                uri = %request.uri(),
-                headers = ?request.headers()
-            )
-        })
-        .on_failure(
-            |failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span| {
-                let latency = format!("{} ms", latency.as_millis());
-
-                match failure {
-                    GrpcFailureClass::Code(code) => {
-                        let readable_code = Code::from_i32(code.into());
-
-                        match readable_code {
-                            Code::NotFound | Code::InvalidArgument => {
-                                tracing::warn!(code = ?readable_code, latency = %latency)
-                            }
-                            _ => {
-                                tracing::error!(code = ?readable_code, latency = %latency)
-                            }
-                        }
-                    }
-                    GrpcFailureClass::Error(error) => {
-                        tracing::error!(error = %error, latency = %latency)
-                    }
-                }
-            },
-        );
-
     // set up the server with configured services
     let server = Server::builder()
-        .layer(logging)
+        .layer(logging::create())
         .add_service(reflection)
         .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
-        .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))));
+        .add_service(PostgresServer::with_interceptor(
+            Postgres::new(Arc::clone(&pool)),
+            extensions::Postgres::interceptor,
+        ));
 
     tracing::info!(address = %&address, "PostgRPC service starting");
 
     #[cfg(feature = "transaction")]
     server
-        .add_service(TransactionServer::new(Transaction::new(pool)))
+        .add_service(TransactionServer::with_interceptor(
+            Transaction::new(pool),
+            extensions::Postgres::interceptor,
+        ))
         .serve_with_shutdown(address, shutdown)
         .await?;
 

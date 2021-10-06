@@ -1,5 +1,5 @@
 use crate::{
-    error_to_status, get_role,
+    error_to_status, extensions,
     proto::transaction::{
         transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest,
         RollbackRequest, TransactionQueryRequest,
@@ -35,10 +35,14 @@ impl GrpcService for Transaction<Pool> {
     #[tracing::instrument(skip(self))]
     async fn query(
         &self,
-        request: Request<TransactionQueryRequest>,
+        mut request: Request<TransactionQueryRequest>,
     ) -> Result<Response<Self::QueryStream>, Status> {
-        // derive a role from headers to use as a connection pool key
-        let role = get_role(&request)?;
+        // derive a role from extensions to use as a connection pool key
+        let role = request
+            .extensions_mut()
+            .remove::<extensions::Postgres>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
 
         // get the request values
         let TransactionQueryRequest {
@@ -91,8 +95,13 @@ impl GrpcService for Transaction<Pool> {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
-    async fn begin(&self, request: Request<()>) -> Result<Response<BeginResponse>, Status> {
-        let role = get_role(&request)?;
+    async fn begin(&self, mut request: Request<()>) -> Result<Response<BeginResponse>, Status> {
+        // derive a role from extensions to use as a connection pool key
+        let role = request
+            .extensions_mut()
+            .remove::<extensions::Postgres>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
 
         let id = Transaction::begin(self, role)
             .await
@@ -102,8 +111,13 @@ impl GrpcService for Transaction<Pool> {
         Ok(Response::new(BeginResponse { id }))
     }
 
-    async fn commit(&self, request: Request<CommitRequest>) -> Result<Response<()>, Status> {
-        let role = get_role(&request)?;
+    async fn commit(&self, mut request: Request<CommitRequest>) -> Result<Response<()>, Status> {
+        // derive a role from extensions to use as a connection pool key
+        let role = request
+            .extensions_mut()
+            .remove::<extensions::Postgres>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
 
         let CommitRequest { id } = request.get_ref();
 
@@ -118,8 +132,16 @@ impl GrpcService for Transaction<Pool> {
         Ok(Response::new(()))
     }
 
-    async fn rollback(&self, request: Request<RollbackRequest>) -> Result<Response<()>, Status> {
-        let role = get_role(&request)?;
+    async fn rollback(
+        &self,
+        mut request: Request<RollbackRequest>,
+    ) -> Result<Response<()>, Status> {
+        // derive a role from extensions to use as a connection pool key
+        let role = request
+            .extensions_mut()
+            .remove::<extensions::Postgres>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
 
         let RollbackRequest { id } = request.get_ref();
 

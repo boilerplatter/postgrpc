@@ -1,5 +1,5 @@
 use crate::{
-    error_to_status, get_role,
+    error_to_status, extensions,
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
     protocol::{json, parameter},
 };
@@ -18,10 +18,14 @@ impl GrpcService for Postgres<Pool> {
     #[tracing::instrument(skip(self))]
     async fn query(
         &self,
-        request: Request<QueryRequest>,
+        mut request: Request<QueryRequest>,
     ) -> Result<Response<Self::QueryStream>, Status> {
-        // derive a role from headers to use as a connection pool key
-        let role = get_role(&request)?;
+        // derive a role from extensions to use as a connection pool key
+        let role = request
+            .extensions_mut()
+            .remove::<extensions::Postgres>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
 
         // get the request values
         let QueryRequest { statement, values } = request.into_inner();

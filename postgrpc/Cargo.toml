@@ -51,10 +51,10 @@ features = ["trace"]
 version = "0.1.1"
 
 [features]
-default = ["transaction", "ssl-native-tls"]
+default = ["transaction", "ssl-native-tls", "role-header"]
 transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
 ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
+role-header = []
 
 # TODO: features
-# - header parsing (X-postgres-role)
 # - connection pooling (choose between implementations)
