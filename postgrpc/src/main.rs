@@ -9,10 +9,11 @@ use postgres_services::transaction::Transaction;
 #[cfg(feature = "transaction")]
 use proto::transaction::transaction_server::TransactionServer;
 use proto::{health::health_server::HealthServer, postgres::postgres_server::PostgresServer};
-use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
+use std::{convert::TryFrom, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
-use tonic::{transport::Server, Request, Status};
+use tonic::{codegen::http::Request as HttpRequest, transport::Server, Code, Request, Status};
+use tower_http::{classify::GrpcFailureClass, trace::TraceLayer};
 
 mod health;
 mod postgres;
@@ -89,6 +90,7 @@ async fn run_service() -> Result<(), Error> {
     let configuration: Configuration = envy::from_env()?;
     let grace_period = configuration.termination_period;
     let mut termination = signal(SignalKind::terminate())?;
+
     let shutdown = async move {
         termination.recv().await;
         tracing::info!("SIGTERM heard in PostgRPC service");
@@ -100,15 +102,53 @@ async fn run_service() -> Result<(), Error> {
         tracing::info!("Shutting down PostgRPC service");
     };
 
-    // configure the application service with the connection pool
+    // parse the service address from configuration
     let address = SocketAddr::from(&configuration);
+
+    // build a shared connection pool from configuration
     let pool = Pool::try_from(configuration).map(Arc::new)?;
+
+    // set up the gRPC reflection service
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
         .build()?;
 
+    // set up logging middleware layer
+    let logging = TraceLayer::new_for_grpc()
+        .make_span_with(|request: &HttpRequest<_>| {
+            tracing::debug_span!(
+                "postgrpc",
+                uri = %request.uri(),
+                headers = ?request.headers()
+            )
+        })
+        .on_failure(
+            |failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span| {
+                let latency = format!("{} ms", latency.as_millis());
+
+                match failure {
+                    GrpcFailureClass::Code(code) => {
+                        let readable_code = Code::from_i32(code.into());
+
+                        match readable_code {
+                            Code::NotFound | Code::InvalidArgument => {
+                                tracing::warn!(code = ?readable_code, latency = %latency)
+                            }
+                            _ => {
+                                tracing::error!(code = ?readable_code, latency = %latency)
+                            }
+                        }
+                    }
+                    GrpcFailureClass::Error(error) => {
+                        tracing::error!(error = %error, latency = %latency)
+                    }
+                }
+            },
+        );
+
+    // set up the server with configured services
     let server = Server::builder()
-        .trace_fn(|_| tracing::info_span!("postgrpc"))
+        .layer(logging)
         .add_service(reflection)
         .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
         .add_service(PostgresServer::new(Postgres::new(Arc::clone(&pool))));

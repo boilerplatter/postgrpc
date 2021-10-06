@@ -45,6 +45,11 @@ default-features = false
 features = ["codegen", "prost", "transport"]
 version = "0.5.2"
 
+[dependencies.tower-http]
+default-features = false
+features = ["trace"]
+version = "0.1.1"
+
 [features]
 default = ["transaction", "ssl-native-tls"]
 transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
