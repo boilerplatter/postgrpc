@@ -1,3 +1,8 @@
+//! A database transaction meta-pool built on `postgres-pool`. This pool handles auto-vaccuming of
+//! inactive transactions at configurable thresholds.
+
+#![deny(missing_docs, unreachable_pub)]
+
 use postgres_pool::Connection;
 use std::{
     collections::HashMap,
@@ -9,19 +14,24 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// Transaction pool errors
 #[derive(Error, Debug)]
 pub enum Error<C>
 where
     C: std::error::Error + 'static,
 {
+    /// Errors bubbled-up from a single connection drawn from the underlying Pool
     #[error(transparent)]
     Connection(C),
+    /// Failure to retrieve a connection from the transaction pool
     #[error("Error retrieving connection from transaction pool")]
     ConnectionFailure,
+    /// Transaction was called before `begin` or after `commit`/`rollback`
     #[error("Requested transaction has not been initialized or was cleaned up due to inactivity")]
     Uninitialized,
 }
 
+// TODO: make these values configurable
 /// Polling interval in seconds for cleanup operations
 const VACUUM_POLLING_INTERVAL_SECONDS: u64 = 1;
 
@@ -112,6 +122,7 @@ impl<K> Key<K>
 where
     K: Hash + Eq,
 {
+    /// Pair a connection pool Key with a unique transaction ID
     pub fn new(key: K, transaction_id: Uuid) -> Self {
         Self {
             key,
