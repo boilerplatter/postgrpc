@@ -12,13 +12,14 @@ use native_tls::TlsConnector;
 #[cfg(feature = "ssl-native-tls")]
 use postgres_native_tls::MakeTlsConnector;
 
+/// Pool configuration errors
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("No system cert found via OpenSSL probe")]
-    CertMissing,
+    /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
     #[error("Error configuring the connection pool: {0}")]
     Configuration(#[from] deadpool_postgres::config::ConfigError),
     #[cfg(feature = "ssl-native-tls")]
+    /// TLS errors during setup of SSL connectors
     #[error("Error setting up TLS connection: {0}")]
     Tls(#[from] native_tls::Error),
 }

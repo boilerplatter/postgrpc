@@ -1,3 +1,11 @@
+//! A Postgres connection pool built on `postgres-pool` and `deadpool_postgres` that is meant for
+//! JSON-based querying from remote sources. This pool initiates connections from a single user,
+//! then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
+//! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
+//! returning rows as a stream of JSON Objects.
+
+#![deny(missing_docs, unreachable_pub)]
+
 use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
 use postgres_pool::Connection;
@@ -12,18 +20,31 @@ use tokio_postgres::{
     RowStream, Statement,
 };
 
+/// Configure the connection pool
 pub mod configuration;
 
+/// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Parameters did not match the number of parameters inferred by statement preparation
     #[error("Expected {expected} parameters but found {actual} instead")]
-    Params { expected: usize, actual: usize },
+    Params {
+        /// number of expected params
+        expected: usize,
+        /// number of actual params in the request after validation
+        actual: usize,
+    },
+    /// Bubbled-up `deadpool_postgres` connection pool errors
     #[error("Error fetching connection from the pool: {0}")]
     Pool(#[from] deadpool_postgres::PoolError),
+    /// Bubbled-up `tokio_postgres` SQL-level errors within a connection
     #[error("SQL Query error: {0}")]
     Query(#[from] tokio_postgres::Error),
+    /// ROLE-setting errors before connections are returned to users
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(tokio_postgres::Error),
+    /// JSON-formatted rows could not be properly converted between Postgres' built-in `to_json()` output and
+    /// `serde_json::Value`. If this error occurs, it is probably a bug in `serde_json` or Postgres itself.
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
 }
@@ -41,6 +62,7 @@ pub struct Pool {
 }
 
 impl Pool {
+    /// Create a new pool from `deadpool_postgres`'s consituent parts
     pub fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool) -> Self {
         Self { config, pool }
     }
@@ -178,9 +200,13 @@ async fn query_raw(
 /// Accepted parameter types from JSON
 #[derive(Debug)]
 pub enum Parameter {
+    /// JSON's `null`
     Null,
+    /// JSON's boolean values
     Boolean(bool),
+    /// JSON's number values
     Number(f64),
+    /// JSON's string values, also used here as a catch-all for type inference
     Text(String),
 }
 
