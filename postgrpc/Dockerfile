@@ -20,4 +20,3 @@ RUN cargo build --release
 
 # Run postgrpc 
 CMD ../target/release/postgrpc
-

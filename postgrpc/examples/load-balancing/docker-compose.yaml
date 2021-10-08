@@ -1,0 +1,43 @@
+version: "3.9" 
+services:
+  postgrpc:
+    build:
+      context: ../../../
+      dockerfile: postgrpc/Dockerfile
+    depends_on:
+      - postgres
+    deploy:
+      replicas: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.postgrpc.entrypoints=postgrpc"
+      - "traefik.http.routers.postgrpc.rule=HostRegexp(`{catchall:.*}`)"
+      - "traefik.http.services.postgrpc.loadbalancer.server.scheme=h2c"
+      - "traefik.http.services.postgrpc.loadbalancer.sticky.cookie.name=postgrpc-session"
+    expose:
+      - 50051
+    environment:
+      - HOST=0.0.0.0
+      - PGHOST=postgres
+      - PGDBNAME=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=supersecretpassword
+      - RUST_LOG=info
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=supersecretpassword
+  traefix:
+    image: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.postgrpc.address=:50051"
+    depends_on:
+      - postgrpc
+    ports:
+      - "50051:50051"
+      - "8080:8080" # Traefik API
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
