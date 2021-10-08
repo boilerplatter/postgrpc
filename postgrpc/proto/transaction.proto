@@ -16,21 +16,21 @@ service Transaction {
   // Commits the transaction by transaction ID
   rpc Commit (CommitRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      post: "transactions/{id}/commit"
+      post: "/transactions/{id}/commit"
     };
   }
 
   // Query the transaction by ID, streaming rows as they are processed
   rpc Query (TransactionQueryRequest) returns (stream google.protobuf.Struct) {
     option (google.api.http) = {
-      post: "transactions/{id}/query"
+      post: "/transactions/{id}/query"
     };
   }
 
   // Rolls back the transaction by transaction ID
   rpc Rollback (RollbackRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      post: "transactions/{id}/rollback"
+      post: "/transactions/{id}/rollback"
     };
   }
 }

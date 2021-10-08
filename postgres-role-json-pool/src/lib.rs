@@ -62,7 +62,7 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// Create a new pool from `deadpool_postgres`'s consituent parts
+    /// Create a new pool from `deadpool_postgres`'s constituent parts
     pub fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool) -> Self {
         Self { config, pool }
     }

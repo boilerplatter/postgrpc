@@ -2,11 +2,10 @@ version: "3.9"
 services:
   postgrpc:
     build:
-      context: ../../
+      context: ../../../
       dockerfile: postgrpc/Dockerfile
     depends_on:
       - postgres
-      - pgbouncer
     environment:
       - HOST=0.0.0.0
       - PGHOST=postgres
@@ -14,23 +13,18 @@ services:
       - PGUSER=postgres
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
+      - TERMINATION_PERIOD=10
   postgres:
     image: postgres
     environment:
       - POSTGRES_PASSWORD=supersecretpassword
-  pgbouncer:
-    image: bitnami/pgbouncer
+  envoy:
+    image: envoyproxy/envoy:v1.20.0
+    command: envoy -c /envoy.yaml
     depends_on:
-      - postgres
-    environment:
-      - POSTGRESQL_PASSWORD=supersecretpassword
-      - POSTGRESQL_HOST=postgres
-  benchmarks:
-    build:
-      context: .
-    depends_on:
-      - postgres
       - postgrpc
-      - pgbouncer
+    ports:
+      - "8080:8080"
     volumes:
-      - ./results:/results
+      - ./envoy.yaml:/envoy.yaml
+      - ./postgrpc.pb:/proto/postgrpc.pb
