@@ -28,7 +28,7 @@ Sometimes you want to use the full power of a Postgres database, but you aren't 
 
 Make sure that you have `cargo` and appropriate Rust toolchains installed. Then clone this repo and run `cargo build --release` in the `postgrpc` subdirectory.
 
-The final executable to run will be at `./postgrpc/target/release/postgrpc`.
+The final executable to run will be at `./target/release/postgrpc`.
 
 `PostgRPC` can be configured with the following environment variables:
 

@@ -1,0 +1,29 @@
+version: "3.9" 
+services:
+  postgrpc:
+    build:
+      context: ../../
+      dockerfile: postgrpc/Dockerfile
+    depends_on:
+      - postgres
+      - pgbouncer
+    ports:
+      - "50051:50051" # FIXME: shouldn't be needed
+    environment:
+      - HOST=0.0.0.0
+      - PGHOST=postgres
+      - PGDBNAME=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=supersecretpassword
+      - RUST_LOG=info
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=supersecretpassword
+  pgbouncer:
+    image: bitnami/pgbouncer
+    depends_on:
+      - postgres
+    environment:
+      - POSTGRESQL_PASSWORD=supersecretpassword
+      - POSTGRESQL_HOST=postgres
