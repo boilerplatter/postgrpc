@@ -27,3 +27,12 @@ services:
     environment:
       - POSTGRESQL_PASSWORD=supersecretpassword
       - POSTGRESQL_HOST=postgres
+  benchmarks:
+    build:
+      context: .
+    depends_on:
+      - postgres
+      - postgrpc
+      - pgbouncer
+    volumes:
+      - ./results:/results

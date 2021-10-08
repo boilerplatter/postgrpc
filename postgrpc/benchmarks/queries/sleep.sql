@@ -1,1 +1,1 @@
-select pg_sleep(5);
+select pg_sleep(1);
