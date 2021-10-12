@@ -185,7 +185,9 @@ async fn query_raw(
     } else {
         // wrap queries that return data in to_json()
         let json_statement = format!(
-            "SELECT TO_JSON(result) AS json FROM ({}) AS result",
+            "WITH cte AS ({})
+            SELECT TO_JSON(result) AS json
+            FROM (SELECT * FROM cte) AS result",
             &statement
         );
 

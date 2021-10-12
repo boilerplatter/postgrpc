@@ -1,4 +1,4 @@
-version: "3.7"
+version: "3.9"
 
 services:
   kratos-migrate:
@@ -15,11 +15,10 @@ services:
         target: /etc/config/kratos
     command: -c /etc/config/kratos/kratos.yml migrate sql -e --yes
     restart: on-failure
-    networks:
-      - intranet
   kratos:
     depends_on:
       - kratos-migrate
+      - envoy
     image: oryd/kratos:v0.7.4-alpha.1-sqlite
     ports:
       - "4433:4433" # public
@@ -37,38 +36,22 @@ services:
       - type: bind
         source: ./kratos
         target: /etc/config/kratos
-    networks:
-      - intranet
-
-  mailslurper:
-    image: oryd/mailslurper:latest-smtps
+  envoy:
+    image: envoyproxy/envoy:v1.20.0
+    command: envoy -c /envoy.yaml
+    depends_on:
+      - postgrpc
     ports:
-      - "4436:4436"
-      - "4437:4437"
-    networks:
-      - intranet
-
-  # auth-app:
-  #   build:
-  #     context: ./app
-  #   ports:
-  #     - "4455:4455"
-  #   environment:
-  #     - PORT=4455
-  #     - KRATOS_BROWSER_URL=http://127.0.0.1:4433/
-  #     - KRATOS_PUBLIC_URL=http://kratos:4433/
-  #     - KRATOS_ADMIN_URL=http://kratos:4434/
-  #   networks:
-  #     - intranet
-  #   restart: on-failure
+      - "8080:8080" # FIXME: hide behind oathkeeper
+    volumes:
+      - ./envoy.yaml:/envoy.yaml
+      - ./postgrpc.pb:/proto/postgrpc.pb
   postgrpc:
     build:
       context: ../../../
       dockerfile: postgrpc/Dockerfile
     depends_on:
       - postgres
-    ports:
-      - "50051:50051"
     environment:
       - HOST=0.0.0.0
       - PGHOST=postgres
@@ -78,22 +61,30 @@ services:
       - RUST_LOG=info
   postgres:
     image: postgres
+    ports:
+      - "5432:5432" # FIXME
     environment:
       - POSTGRES_PASSWORD=superuserpassword
     volumes:
       - ./init.sh:/docker-entrypoint-initdb.d/init.sh
+  app:
+    build:
+      context: ./app
+      args:
+        - REACT_APP_KRATOS_PUBLIC_URL=http://127.0.0.1:4433
+    ports:
+      - "4455:4455"
+    depends_on:
+      - kratos
+    environment:
+      - PORT=4455
 
   # TODO:
+  # use kratos registration hooks to create postgres roles for each app user
   # include oathkeeper proxy in front of postgrpc
   # write custom "secureapp" that:
-  # - doesn't include the entire recovery flow/email confirmation
-  # - creates new postgres users for application users
   # - allows users to CRUD their own notes
   # BONUS: use registered queries for extra security
 
-networks:
-  intranet:
-
 volumes:
   kratos-sqlite:
-

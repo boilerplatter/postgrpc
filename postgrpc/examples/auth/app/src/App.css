@@ -35,6 +35,10 @@ form + hr + a {
   font-size: 0.85rem;
 }
 
+form.new-note {
+  margin: 2rem;
+}
+
 button {
   background-color: teal;
   border: none;
@@ -43,6 +47,7 @@ button {
   color: white;
   font-weight: bold;
   font-size: 1rem;
+  outline: none;
   padding: 0.5rem;
 }
 
@@ -50,8 +55,21 @@ button:hover, button:active, button:focus {
   background-color: #04adad;
 }
 
+button.danger {
+  background-color: tomato;
+}
+
+button.danger:hover, button.danger:active, button.danger:focus {
+  background-color: #b13822;
+}
+
+.buttons button {
+  margin: 0 1rem;
+}
+
 h1 {
   font-size: 2.5rem;
+  margin: 1rem;
 }
 
 a {

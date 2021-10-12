@@ -27,6 +27,9 @@ PGPASSWORD=supersecretpassword psql -U appuser -d appdb <<-EOSQL
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  -- make sure notes is guarded with row-level security policies
+  ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
   -- create row-level security policy allowing users to work with their own notes only
   CREATE POLICY author_notes_policy ON notes USING (author = CURRENT_USER);
 EOSQL

@@ -17,12 +17,6 @@
               "password": {
                 "identifier": true
               }
-            },
-            "verification": {
-              "via": "email"
-            },
-            "recovery": {
-              "via": "email"
             }
           }
         },

@@ -15,6 +15,7 @@ const toMessage = (action, error) =>
   `${action} failed with status ${error?.status || 'Unknown'}: ${error?.reason || error?.message || 'Bad response from server'}`
 
 // set up silly "caches" for hooks
+// FIXME: handle expirations, too
 let CACHED_LOGIN_FLOW = null
 let CACHED_REGISTRATION_FLOW = null
 

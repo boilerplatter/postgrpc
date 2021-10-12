@@ -8,8 +8,10 @@ serve:
     cors:
       enabled: true
       allowed_origins:
-        - http://127.0.0.1:3000
-        - http://localhost:3000
+        - http://127.0.0.1:3000 # FIXME
+        - http://localhost:3000 # FIXME
+        - http://127.0.0.1:4455 # FIXME
+        - http://localhost:4455 # FIXME
       allowed_methods:
         - POST
         - GET
@@ -43,16 +45,6 @@ selfservice:
       ui_url: http://127.0.0.1:4455/settings
       privileged_session_max_age: 15m
 
-    recovery:
-      enabled: true
-      ui_url: http://127.0.0.1:4455/recovery
-
-    verification:
-      enabled: true
-      ui_url: http://127.0.0.1:4455/verify
-      after:
-        default_browser_return_url: http://127.0.0.1:4455/
-
     logout:
       after:
         default_browser_return_url: http://127.0.0.1:4455/auth/login
@@ -67,8 +59,22 @@ selfservice:
       after:
         password:
           hooks:
-            -
-              hook: session
+            - hook: session
+            - hook: web_hook
+              config:
+                url: http://envoy:8080/query
+                method: POST
+                body: file:///etc/config/kratos/create_user.jsonnet
+            - hook: web_hook
+              config:
+                url: http://envoy:8080/query
+                method: POST
+                body: file:///etc/config/kratos/grant_role.jsonnet
+            - hook: web_hook
+              config:
+                url: http://envoy:8080/query
+                method: POST
+                body: file:///etc/config/kratos/grant_ops.jsonnet
 
 log:
   level: debug
