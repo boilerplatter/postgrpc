@@ -1,0 +1,72 @@
+.App {
+  align-items: center;
+  background-color: #282c34;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 100vh;
+  text-align: center;
+}
+
+form {
+  display: flex;
+  color: lightgrey;
+  flex-direction: column;
+  font-size: 1rem;
+  gap: 1rem;
+}
+
+form > div {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+}
+
+form > div:last-of-type {
+  margin-bottom: 0.5rem;
+}
+
+form input {
+  padding: 0.25rem;
+}
+
+form + hr + a {
+  font-size: 0.85rem;
+}
+
+button {
+  background-color: teal;
+  border: none;
+  border-radius: 0.15rem;
+  cursor: pointer;
+  color: white;
+  font-weight: bold;
+  font-size: 1rem;
+  padding: 0.5rem;
+}
+
+button:hover, button:active, button:focus {
+  background-color: #04adad;
+}
+
+h1 {
+  font-size: 2.5rem;
+}
+
+a {
+  color: #908f8f;
+}
+
+hr {
+  border: none;
+  background-color: #ffffff38;
+  margin: 2rem 0 1rem 0rem;
+  width: 15rem;
+  height: 0.05rem;
+}
+
+a:hover, a:active, a:focus {
+  outline: none;
+  color: white;
+}
