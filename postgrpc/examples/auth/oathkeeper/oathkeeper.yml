@@ -4,10 +4,7 @@ serve:
     cors:
       enabled: true
       allowed_origins:
-        - http://127.0.0.1:3000 # FIXME
-        - http://localhost:3000 # FIXME
-        - http://127.0.0.1:4455 # FIXME
-        - http://localhost:4455 # FIXME
+        - http://127.0.0.1:4455
       allowed_methods:
         - POST
       allowed_headers:

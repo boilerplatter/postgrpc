@@ -32,8 +32,6 @@ static_resources:
                   proto_descriptor: "/proto/postgrpc.pb"
                   services: 
                     - "postgres.Postgres"
-                    - "transaction.Transaction"
-                    - "health.Health"
                   convert_grpc_status: true
                   auto_mapping: false
                   print_options:

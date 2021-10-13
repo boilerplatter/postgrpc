@@ -8,10 +8,7 @@ serve:
     cors:
       enabled: true
       allowed_origins:
-        - http://127.0.0.1:3000 # FIXME
-        - http://localhost:3000 # FIXME
-        - http://127.0.0.1:4455 # FIXME
-        - http://localhost:4455 # FIXME
+        - http://127.0.0.1:4455
       allowed_methods:
         - POST
         - GET
@@ -70,6 +67,11 @@ selfservice:
                 url: http://envoy:8080/query
                 method: POST
                 body: file:///etc/config/kratos/grant_role.jsonnet
+            - hook: web_hook
+              config:
+                url: http://envoy:8080/query
+                method: POST
+                body: file:///etc/config/kratos/grant_usage.jsonnet
             - hook: web_hook
               config:
                 url: http://envoy:8080/query

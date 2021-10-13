@@ -7,7 +7,10 @@ psql -U postgres -d postgres <<-EOSQL
   -- create scoped and unprivileged database + user combo
   CREATE USER appuser WITH PASSWORD 'supersecretpassword' CREATEROLE NOSUPERUSER NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
   CREATE DATABASE appdb OWNER appuser;
+EOSQL
 
+# initialize limited privileges on the new database
+psql -U postgres -d appdb <<-EOSQL
   -- revoke everything but USAGE rights from appdb for new users
   REVOKE ALL ON SCHEMA public FROM PUBLIC;
   ALTER SCHEMA public OWNER TO appuser;
