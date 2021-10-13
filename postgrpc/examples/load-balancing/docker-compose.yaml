@@ -27,7 +27,7 @@ services:
     image: postgres
     environment:
       - POSTGRES_PASSWORD=supersecretpassword
-  traefix:
+  traefik:
     image: traefik
     command:
       - "--api.insecure=true"
