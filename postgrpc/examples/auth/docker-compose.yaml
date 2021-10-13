@@ -14,16 +14,13 @@ services:
         source: ./kratos
         target: /etc/config/kratos
     command: -c /etc/config/kratos/kratos.yml migrate sql -e --yes
-    restart: on-failure
   kratos:
     depends_on:
       - kratos-migrate
       - envoy
     image: oryd/kratos:v0.7.4-alpha.1-sqlite
     ports:
-      - "4433:4433" # public
-      - "4434:4434" # admin
-    restart: unless-stopped
+      - 4433:4433
     environment:
       - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true
       - LOG_LEVEL=trace
@@ -36,13 +33,21 @@ services:
       - type: bind
         source: ./kratos
         target: /etc/config/kratos
+  oathkeeper:
+    image: oryd/oathkeeper:v0.38
+    depends_on:
+      - kratos
+    ports:
+      - 8888:8888
+    command:
+      serve proxy -c /etc/config/oathkeeper/oathkeeper.yml
+    volumes:
+      - ./oathkeeper:/etc/config/oathkeeper
   envoy:
     image: envoyproxy/envoy:v1.20.0
     command: envoy -c /envoy.yaml
     depends_on:
       - postgrpc
-    ports:
-      - "8080:8080" # FIXME: hide behind oathkeeper
     volumes:
       - ./envoy.yaml:/envoy.yaml
       - ./postgrpc.pb:/proto/postgrpc.pb
@@ -61,8 +66,6 @@ services:
       - RUST_LOG=info
   postgres:
     image: postgres
-    ports:
-      - "5432:5432" # FIXME
     environment:
       - POSTGRES_PASSWORD=superuserpassword
     volumes:
@@ -72,19 +75,14 @@ services:
       context: ./app
       args:
         - REACT_APP_KRATOS_PUBLIC_URL=http://127.0.0.1:4433
+        - REACT_APP_POSTGRPC_URL=http://127.0.0.1:8888 # proxied by oathkeeper
     ports:
-      - "4455:4455"
+      - 4455:4455
     depends_on:
       - kratos
+      - oathkeeper
     environment:
       - PORT=4455
-
-  # TODO:
-  # use kratos registration hooks to create postgres roles for each app user
-  # include oathkeeper proxy in front of postgrpc
-  # write custom "secureapp" that:
-  # - allows users to CRUD their own notes
-  # BONUS: use registered queries for extra security
 
 volumes:
   kratos-sqlite:

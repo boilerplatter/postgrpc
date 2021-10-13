@@ -2,6 +2,7 @@ FROM node:latest
 
 # set up environment variables
 ARG REACT_APP_KRATOS_PUBLIC_URL
+ARG REACT_APP_POSTGRPC_URL
 ENV NODE_ENV production
 
 # set up working directory

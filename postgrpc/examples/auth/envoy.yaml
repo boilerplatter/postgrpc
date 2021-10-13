@@ -25,15 +25,7 @@ static_resources:
                       timeout: 0s
                       max_stream_duration:
                         grpc_timeout_header_max: 0s
-                cors:
-                  allow_origin_string_match:
-                    - prefix: "*"
-                  allow_methods: GET, PUT, DELETE, POST, OPTIONS
-                  allow_headers: authorization,keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,grpc-timeout,x-postgres-role
-                  max_age: "1728000"
-                  expose_headers: grpc-status,grpc-message
             http_filters:
-              - name: envoy.filters.http.cors
               - name: envoy.filters.http.grpc_json_transcoder
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder

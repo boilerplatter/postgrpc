@@ -2,19 +2,19 @@ import { useEffect, useState } from 'react'
 import { toast } from 'react-toastify'
 
 // set up constants
-const POSTGRPC_URL = 'http://0.0.0.0:8080' // FIXME: get from the environment and point to Oathkeeper instead of envoy
+const REACT_APP_POSTGRPC_URL = process.env.REACT_APP_POSTGRPC_URL
 
 // wrap fetch in a unified query interface
-const query = async (role, statement, values = []) => {
+const query = async (statement, values = []) => {
   const body = JSON.stringify({ statement, values })
 
   const response = await fetch(
-    `${POSTGRPC_URL}/query`,
+    `${REACT_APP_POSTGRPC_URL}/query`,
     {
       body,
+      credentials: 'include',
       method: 'POST',
       headers: {
-        'X-Postgres-Role': role, // FIXME: use Oathkeeper mutators instead
         'Content-Type': 'application/json'
       }
     }
@@ -34,7 +34,7 @@ export const useNotes = (identity) => {
         SELECT id, note, created_at
         FROM notes
       `
-      const response = await query(identity.id, statement)
+      const response = await query(statement)
 
       // FIXME: figure out why fetch isn't handling statuses correctly
       if (!response.code) {
@@ -62,7 +62,7 @@ export const useNotes = (identity) => {
       RETURNING id, note, created_at
     `
     const values = [note]
-    const response = await query(identity.id, statement, values)
+    const response = await query(statement, values)
 
     // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
@@ -86,7 +86,7 @@ export const useNotes = (identity) => {
       RETURNING id, note, created_at
     `
     const values = [id, note]
-    const response = await query(identity.id, statement, values)
+    const response = await query(statement, values)
 
     // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
@@ -108,7 +108,7 @@ export const useNotes = (identity) => {
       WHERE id = $1::text::uuid
     `
     const values = [id]
-    const response = await query(identity.id, statement, values)
+    const response = await query(statement, values)
 
     // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
