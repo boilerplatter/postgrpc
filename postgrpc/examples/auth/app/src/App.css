@@ -55,6 +55,10 @@ button:hover, button:active, button:focus {
   background-color: #04adad;
 }
 
+button:disabled {
+  opacity: 0.5;
+}
+
 button.danger {
   background-color: tomato;
 }
@@ -87,4 +91,17 @@ hr {
 a:hover, a:active, a:focus {
   outline: none;
   color: white;
+}
+
+.ReactTable {
+  border: solid 1px #908f8f;
+  border-radius: 0.25rem;
+  margin: 2rem 0;
+  width: 50%;
+}
+
+.ReactTable .buttons button {
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  width: 3rem;
 }
