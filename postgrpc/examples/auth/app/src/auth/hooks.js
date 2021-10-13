@@ -14,11 +14,6 @@ import {
 const toMessage = (action, error) =>
   `${action} failed with status ${error?.status || 'Unknown'}: ${error?.reason || error?.message || 'Bad response from server'}`
 
-// set up silly "caches" for hooks
-// FIXME: handle expirations, too
-let CACHED_LOGIN_FLOW = null
-let CACHED_REGISTRATION_FLOW = null
-
 // use the Kratos identity or redirect to the login page
 export const useIdentity = () => {
   const history = useHistory()
@@ -47,7 +42,6 @@ export const useIdentity = () => {
 
     if (response.ok) {
       // force a new login flow after logout
-      CACHED_LOGIN_FLOW = null
       history.replace('/auth/login')
     } else {
       const { error } = await response.json()
@@ -58,10 +52,21 @@ export const useIdentity = () => {
   return [identity, onLogOut]
 }
 
+// render Kratos response UI messages as toast notifications
+const renderMessages = ui => {
+  if (ui.messages) {
+    for (const { text } of ui.messages) {
+      if (text) {
+        toast.error(text)
+      }
+    }
+  }
+}
+
 // use a wrapper of the entire Kratos login flow
 export const useLoginFlow = () => {
   const history = useHistory()
-  const [flow, setFlow] = useState(CACHED_LOGIN_FLOW)
+  const [flow, setFlow] = useState(null)
 
   // create a new login flow once on render
   useEffect(() => {
@@ -75,7 +80,7 @@ export const useLoginFlow = () => {
         const response = await startLogin()
 
         if (response?.ui) {
-          CACHED_LOGIN_FLOW = response.ui
+          renderMessages(response.ui)
           setFlow(response.ui)
         } else {
           toast.error(toMessage('Login', response?.error))
@@ -92,9 +97,7 @@ export const useLoginFlow = () => {
     const response = await completeLogin(flow, form)
 
     if (response.ui) {
-      // FIXME: render messages for the user
-      toast.warn('Additional action required')
-      CACHED_LOGIN_FLOW = response.ui
+      renderMessages(response.ui)
       setFlow(response.ui)
     } else if (response.session?.active) {
       history.replace('/')
@@ -109,7 +112,7 @@ export const useLoginFlow = () => {
 // use a wrapper of the entire Kratos login flow
 export const useRegistrationFlow = () => {
   const history = useHistory()
-  const [flow, setFlow] = useState(CACHED_REGISTRATION_FLOW)
+  const [flow, setFlow] = useState(null)
 
   // create a new registration flow once on render
   useEffect(() => {
@@ -123,7 +126,7 @@ export const useRegistrationFlow = () => {
         const response = await startRegistration()
 
         if (response?.ui) {
-          CACHED_REGISTRATION_FLOW = response.ui
+          renderMessages(response.ui)
           setFlow(response.ui)
         } else {
           toast.error(toMessage('Registration', response?.error))
@@ -140,9 +143,7 @@ export const useRegistrationFlow = () => {
     const response = await completeRegistration(flow, form)
 
     if (response.ui) {
-      // FIXME: render messages for the user
-      toast.warn('Additional action required')
-      CACHED_LOGIN_FLOW = response.ui
+      renderMessages(response.ui)
       setFlow(response.ui)
     } else if (response.session?.active) {
       history.replace('/')

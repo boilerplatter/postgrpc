@@ -36,7 +36,6 @@ export const useNotes = (identity) => {
       `
       const response = await query(statement)
 
-      // FIXME: figure out why fetch isn't handling statuses correctly
       if (!response.code) {
         const newNotes = response.reduce((notes, note) => ({
           ...notes,
@@ -64,7 +63,6 @@ export const useNotes = (identity) => {
     const values = [note]
     const response = await query(statement, values)
 
-    // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
       const [newNote] = response
 
@@ -88,7 +86,6 @@ export const useNotes = (identity) => {
     const values = [id, note]
     const response = await query(statement, values)
 
-    // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
       const [newNote] = response
 
@@ -110,7 +107,6 @@ export const useNotes = (identity) => {
     const values = [id]
     const response = await query(statement, values)
 
-    // FIXME: figure out why fetch isn't handling statuses correctly
     if (!response.code) {
       const newNotes = Object
         .entries(notes)
