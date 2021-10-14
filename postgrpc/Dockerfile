@@ -1,4 +1,7 @@
-FROM rust:1.55
+FROM rust:1.55 AS builder
+
+# set up working directory
+WORKDIR /app
 
 # install required formatter
 RUN rustup component add rustfmt
@@ -18,5 +21,9 @@ COPY . .
 WORKDIR ./postgrpc
 RUN cargo build --release
 
+# use multi-stage build for smaller production image
+FROM gcr.io/distroless/cc
+COPY --from=builder /app/target/release/postgrpc /
+
 # Run postgrpc 
-CMD ../target/release/postgrpc
+CMD ["/postgrpc"]
