@@ -1,10 +1,10 @@
 use crate::{
-    error_to_status, extensions,
+    error_to_status,
     proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest},
     protocol::{json, parameter},
 };
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use postgres_role_json_pool::Pool;
+use postgres_role_json_pool::{Pool, Role};
 use postgres_services::postgres::Postgres;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
@@ -23,9 +23,8 @@ impl GrpcService for Postgres<Pool> {
         // derive a role from extensions to use as a connection pool key
         let role = request
             .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+            .remove::<Role>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?;
 
         // get the request values
         let QueryRequest { statement, values } = request.into_inner();
@@ -42,8 +41,8 @@ impl GrpcService for Postgres<Pool> {
             return Err(
                 Status::invalid_argument(
                     "Invalid parameter values found. Only numbers, strings, boolean, and null values permitted"
-                    )
-                );
+                )
+            );
         }
 
         // get the rows, converting output to proto-compatible structs and statuses

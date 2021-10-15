@@ -7,9 +7,13 @@
 #![deny(missing_docs, unreachable_pub)]
 
 use futures_core::{ready, Stream};
+#[cfg(feature = "http-types")]
+use futures_util::TryStreamExt;
 use pin_project_lite::pin_project;
 use postgres_pool::Connection;
+use serde::de::{Deserialize, Visitor};
 use std::{
+    fmt,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -49,8 +53,38 @@ pub enum Error {
     InvalidJson,
 }
 
+#[cfg(feature = "http-types")]
+impl From<Error> for http::StatusCode {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Params { .. } | Error::Query(..) | Error::InvalidJson => Self::BAD_REQUEST,
+            Error::Pool(..) | Error::Role(..) => Self::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
 /// Optionally-derived Role key for the default pool
-type Role = Option<String>;
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+pub struct Role(Option<String>);
+
+impl Role {
+    /// Create a new Role manually
+    pub fn new(role: Option<String>) -> Self {
+        Self(role)
+    }
+
+    /// Consume the role returning its contents
+    pub fn into_inner(self) -> Option<String> {
+        self.0
+    }
+}
+
+#[cfg(feature = "http-types")]
+impl From<http::Extensions> for Role {
+    fn from(mut extensions: http::Extensions) -> Self {
+        extensions.remove::<Self>().unwrap_or_default()
+    }
+}
 
 /// Deadpool-based pool implementation keyed by ROLE pointing to a single database
 // database connections are initiated from a single user and shared through SET LOCAL ROLE
@@ -74,10 +108,10 @@ impl postgres_pool::Pool for Pool {
     type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
 
-    async fn get_connection(&self, key: Option<String>) -> Result<Self::Connection, Self::Error> {
+    async fn get_connection(&self, key: Role) -> Result<Self::Connection, Self::Error> {
         let connection = self.pool.get().await?;
 
-        let local_role_statement = match key {
+        let local_role_statement = match key.0 {
             Some(role) => format!(r#"SET ROLE "{}""#, role),
             None => "RESET ROLE".to_string(),
         };
@@ -91,6 +125,8 @@ impl postgres_pool::Pool for Pool {
     }
 }
 
+type Row = serde_json::Map<String, serde_json::Value>;
+
 pin_project! {
     /// The stream of JSON-formatted rows returned by this pool's associated connection
     pub struct JsonStream {
@@ -100,7 +136,7 @@ pin_project! {
 }
 
 impl Stream for JsonStream {
-    type Item = Result<serde_json::Map<String, serde_json::Value>, Error>;
+    type Item = Result<Row, Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -121,6 +157,17 @@ impl Stream for JsonStream {
 impl From<RowStream> for JsonStream {
     fn from(rows: RowStream) -> Self {
         Self { rows }
+    }
+}
+
+#[cfg(feature = "http-types")]
+impl From<JsonStream> for hyper::Body {
+    fn from(json_stream: JsonStream) -> Self {
+        hyper::Body::wrap_stream(json_stream.and_then(|row| async move {
+            let json = serde_json::to_vec(&row).map_err(|_| Error::InvalidJson)?;
+
+            Ok(hyper::body::Bytes::from(json))
+        }))
     }
 }
 
@@ -212,6 +259,8 @@ pub enum Parameter {
     Text(String),
 }
 
+// FIXME: implement serde's own Deserialize
+
 impl Parameter {
     /// convert serde JSON values to scalar parameters
     // TODO: consider relaxing the scalar constraint for specific cases
@@ -260,6 +309,77 @@ impl ToSql for Parameter {
     }
 
     to_sql_checked!();
+}
+
+impl<'de> Deserialize<'de> for Parameter {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Parameter, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValueVisitor;
+
+        impl<'de> Visitor<'de> for ValueVisitor {
+            type Value = Parameter;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("any valid JSON value")
+            }
+
+            #[inline]
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(Self::Value::Boolean(value))
+            }
+
+            #[inline]
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(Self::Value::Number(value as f64))
+            }
+
+            #[inline]
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(Self::Value::Number(value as f64))
+            }
+
+            #[inline]
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+                Ok(Self::Value::Number(value))
+            }
+
+            #[inline]
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_string(String::from(value))
+            }
+
+            #[inline]
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(Self::Value::Text(value))
+            }
+
+            #[inline]
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(Self::Value::Null)
+            }
+
+            #[inline]
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                Deserialize::deserialize(deserializer)
+            }
+
+            #[inline]
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(Self::Value::Null)
+            }
+        }
+
+        deserializer.deserialize_any(ValueVisitor)
+    }
 }
 
 // TODO: add unit tests

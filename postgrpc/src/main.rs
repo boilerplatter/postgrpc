@@ -1,4 +1,8 @@
+#[cfg(feature = "json-transcoding")]
+use futures_util::{future::Either, TryFutureExt};
 use health::Health;
+#[cfg(feature = "json-transcoding")]
+use hyper::service::{make_service_fn, Service};
 use postgres_role_json_pool::{
     configuration::{self, Configuration},
     Pool,
@@ -54,6 +58,11 @@ enum Error {
     SigTerm(#[from] std::io::Error),
     #[error("Error in gRPC transport: {0}")]
     Transport(#[from] tonic::transport::Error),
+    #[cfg(feature = "json-transcoding")]
+    #[error(transparent)]
+    Http(#[from] http::Error),
+    #[error(transparent)]
+    Hyper(#[from] hyper::Error),
 }
 
 /// map default pool errors to proper gRPC statuses
@@ -101,33 +110,122 @@ async fn run_service() -> Result<(), Error> {
         .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
         .build()?;
 
-    // set up the server with configured services
-    let server = Server::builder()
-        .layer(logging::create())
-        .add_service(reflection)
-        .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
-        .add_service(PostgresServer::with_interceptor(
-            Postgres::new(Arc::clone(&pool)),
-            extensions::Postgres::interceptor,
-        ));
+    // configure individual services
+    #[cfg(feature = "json-transcoding")]
+    let http_service = postgres_services::http::service(Arc::clone(&pool));
 
-    tracing::info!(address = %&address, "PostgRPC service starting");
+    let postgres =
+        PostgresServer::with_interceptor(Postgres::new(Arc::clone(&pool)), extensions::role);
 
     #[cfg(feature = "transaction")]
-    server
-        .add_service(TransactionServer::with_interceptor(
-            Transaction::new(pool),
-            extensions::Postgres::interceptor,
-        ))
-        .serve_with_shutdown(address, shutdown)
-        .await?;
+    let transaction = Some(TransactionServer::with_interceptor(
+        Transaction::new(Arc::clone(&pool)),
+        extensions::role,
+    ));
 
     #[cfg(not(feature = "transaction"))]
-    server.serve_with_shutdown(address, shutdown).await?;
+    let transaction = None;
+
+    // start the server with configured services
+    tracing::info!(address = %&address, "PostgRPC service starting");
+
+    let grpc_server = Server::builder()
+        .layer(logging::create())
+        .add_service(reflection)
+        .add_service(HealthServer::new(Health::new(pool)))
+        .add_service(postgres)
+        .add_optional_service(transaction);
+
+    #[cfg(not(feature = "json-transcoding"))]
+    grpc_server.serve_with_shutdown(address, shutdown).await?;
+
+    #[cfg(feature = "json-transcoding")]
+    let grpc_service = grpc_server.into_service();
+
+    #[cfg(feature = "json-transcoding")]
+    hyper::Server::bind(&address)
+        .serve(make_service_fn(move |_connection| {
+            let grpc_service = grpc_service.clone();
+
+            async move {
+                Ok::<_, std::convert::Infallible>(tower::service_fn(
+                    move |request: hyper::Request<hyper::Body>| match request
+                        .headers()
+                        .get(hyper::header::CONTENT_TYPE)
+                        .map(|header| header.to_str())
+                    {
+                        Some(Ok("application/json")) => Either::Left(
+                            http_service
+                                .call(request)
+                                .map_ok(|next| next.map(EitherBody::Left))
+                                .map_err(Error::from),
+                        ),
+                        _ => Either::Right(
+                            grpc_service
+                                .call(request)
+                                .map_ok(|next| next.map(EitherBody::Right))
+                                .map_err(Error::from),
+                        ),
+                    },
+                ))
+            }
+        }))
+        .await
+        .expect("hyper goofed");
 
     tracing::info!(address = %&address, "PostgRPC service stopped");
 
     Ok(())
+}
+
+// FIXME: put this in a module
+#[cfg(feature = "json-transcoding")]
+enum EitherBody<A, B> {
+    Left(A),
+    Right(B),
+}
+
+#[cfg(feature = "json-transcoding")]
+impl<A, B> http_body::Body for EitherBody<A, B>
+where
+    A: http_body::Body + Send + Unpin,
+    B: http_body::Body<Data = A::Data> + Send + Unpin,
+    A::Error: Into<Error>,
+    B::Error: Into<Error>,
+{
+    type Data = A::Data;
+    type Error = Error;
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            EitherBody::Left(b) => b.is_end_stream(),
+            EitherBody::Right(b) => b.is_end_stream(),
+        }
+    }
+
+    fn poll_data(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Self::Data, Self::Error>>> {
+        match self.get_mut() {
+            EitherBody::Left(b) => std::pin::Pin::new(b)
+                .poll_data(cx)
+                .map(|next| next.map(|result| result.map_err(Into::into))),
+            EitherBody::Right(b) => std::pin::Pin::new(b)
+                .poll_data(cx)
+                .map(|next| next.map(|result| result.map_err(Into::into))),
+        }
+    }
+
+    fn poll_trailers(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<http::HeaderMap>, Self::Error>> {
+        match self.get_mut() {
+            EitherBody::Left(b) => std::pin::Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            EitherBody::Right(b) => std::pin::Pin::new(b).poll_trailers(cx).map_err(Into::into),
+        }
+    }
 }
 
 #[tokio::main]

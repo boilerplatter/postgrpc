@@ -22,10 +22,24 @@ tracing-subscriber = "0.2.18"
 tracing-futures = "0.2.5"
 uuid = "0.8.2"
 
+[dependencies.http]
+optional = true
+version = "0.2"
+
+[dependencies.http-body]
+optional = true
+version = "0.4.2"
+
+[dependencies.hyper]
+optional = true
+features = ["full"]
+version = "0.14.13"
+
 [dependencies.postgres-pool]
 path = "../postgres-pool"
 
 [dependencies.postgres-role-json-pool]
+features = ["http-types"]
 path = "../postgres-role-json-pool"
 
 [dependencies.postgres-services]
@@ -45,15 +59,20 @@ default-features = false
 features = ["codegen", "prost", "transport"]
 version = "0.5.2"
 
+[dependencies.tower]
+optional = true
+version = "0.4.9"
+
 [dependencies.tower-http]
 default-features = false
 features = ["trace"]
 version = "0.1.1"
 
 [features]
-default = ["transaction", "ssl-native-tls", "role-header"]
+default = ["transaction", "ssl-native-tls", "role-header", "json-transcoding"] # FIXME: disable transcoding by default
 transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
 ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
+json-transcoding = ["http", "http-body", "hyper", "postgres-services/http-service", "tower"]
 role-header = []
 
 # TODO: features

@@ -1,5 +1,5 @@
 use crate::{
-    error_to_status, extensions,
+    error_to_status,
     proto::transaction::{
         transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest,
         RollbackRequest, TransactionQueryRequest,
@@ -7,7 +7,7 @@ use crate::{
     protocol::{json, parameter},
 };
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use postgres_role_json_pool::Pool;
+use postgres_role_json_pool::{Pool, Role};
 use postgres_services::transaction::Transaction;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
@@ -40,9 +40,8 @@ impl GrpcService for Transaction<Pool> {
         // derive a role from extensions to use as a connection pool key
         let role = request
             .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+            .remove::<Role>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?;
 
         // get the request values
         let TransactionQueryRequest {
@@ -99,9 +98,8 @@ impl GrpcService for Transaction<Pool> {
         // derive a role from extensions to use as a connection pool key
         let role = request
             .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+            .remove::<Role>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?;
 
         let id = Transaction::begin(self, role)
             .await
@@ -115,9 +113,8 @@ impl GrpcService for Transaction<Pool> {
         // derive a role from extensions to use as a connection pool key
         let role = request
             .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+            .remove::<Role>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?;
 
         let CommitRequest { id } = request.get_ref();
 
@@ -139,9 +136,8 @@ impl GrpcService for Transaction<Pool> {
         // derive a role from extensions to use as a connection pool key
         let role = request
             .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+            .remove::<Role>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?;
 
         let RollbackRequest { id } = request.get_ref();
 
