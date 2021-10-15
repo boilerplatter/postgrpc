@@ -1,8 +1,12 @@
-use super::Pool;
+use super::{
+    cors::{AllowedFunctions, AllowedStatements, Cors},
+    Pool,
+};
 use serde::{Deserialize, Deserializer};
 use std::{
     convert::TryFrom,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    str::FromStr,
     time::Duration,
 };
 use thiserror::Error;
@@ -27,6 +31,12 @@ pub enum Error {
 /// Environment-derived configuration for the default pool
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
+    /// statement types that are allowed in queries
+    #[serde(default, deserialize_with = "from_statements_string")]
+    pub allowed_statements: AllowedStatements,
+    /// function (by name) that can be invoked in queries
+    #[serde(default, deserialize_with = "from_functions_string")]
+    pub allowed_functions: AllowedFunctions,
     /// service host IP address
     #[serde(default = "get_v4_localhost")]
     pub host: IpAddr,
@@ -82,6 +92,30 @@ where
     Ok(duration)
 }
 
+/// Deserializer for allowed_statements, passed through the environment as comma-separated string
+fn from_statements_string<'de, D>(deserializer: D) -> Result<AllowedStatements, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let base_string = String::deserialize(deserializer)?;
+    let allowed_statements =
+        AllowedStatements::from_str(&base_string).map_err(serde::de::Error::custom)?;
+
+    Ok(allowed_statements)
+}
+
+/// Deserializer for allowed_functions, passed through the environment as comma-separated string
+fn from_functions_string<'de, D>(deserializer: D) -> Result<AllowedFunctions, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let base_string = String::deserialize(deserializer)?;
+    let allowed_functions =
+        AllowedFunctions::from_str(&base_string).map_err(serde::de::Error::custom)?;
+
+    Ok(allowed_functions)
+}
+
 /// Convert configurations into a valid SocketAddr
 impl From<&Configuration> for SocketAddr {
     fn from(configuration: &Configuration) -> Self {
@@ -112,9 +146,15 @@ impl TryFrom<Configuration> for Pool {
             ..deadpool_postgres::Config::default()
         };
 
-        // generate the pool from confiuration
+        // generate the pool from configuration
         let pool = config.create_pool(tls_connector)?;
 
-        Ok(Self::new(config, pool))
+        // generate cors from the configuration
+        let cors = Cors::new(
+            configuration.allowed_statements,
+            configuration.allowed_functions,
+        );
+
+        Ok(Self::new(config, pool, cors))
     }
 }

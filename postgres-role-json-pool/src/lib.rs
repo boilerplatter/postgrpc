@@ -6,11 +6,13 @@
 
 #![deny(missing_docs, unreachable_pub)]
 
+use cors::Cors;
 use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
 use postgres_pool::Connection;
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 use thiserror::Error;
@@ -22,10 +24,14 @@ use tokio_postgres::{
 
 /// Configure the connection pool
 pub mod configuration;
+mod cors; // FIXME: feature flag
 
 /// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Statement failed to pass CORS restrictions
+    #[error(transparent)]
+    Cors(#[from] cors::Error),
     /// Parameters did not match the number of parameters inferred by statement preparation
     #[error("Expected {expected} parameters but found {actual} instead")]
     Params {
@@ -57,14 +63,19 @@ type Role = Option<String>;
 // this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
 #[derive(Clone)]
 pub struct Pool {
+    cors: Arc<Cors>,
     config: deadpool_postgres::Config,
     pool: deadpool_postgres::Pool,
 }
 
 impl Pool {
     /// Create a new pool from `deadpool_postgres`'s constituent parts
-    pub fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool) -> Self {
-        Self { config, pool }
+    fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool, cors: Cors) -> Self {
+        Self {
+            cors: Arc::new(cors),
+            config,
+            pool,
+        }
     }
 }
 
@@ -75,19 +86,21 @@ impl postgres_pool::Pool for Pool {
     type Error = <Self::Connection as Connection>::Error;
 
     async fn get_connection(&self, key: Option<String>) -> Result<Self::Connection, Self::Error> {
-        let connection = self.pool.get().await?;
+        let client = self.pool.get().await?;
 
         let local_role_statement = match key {
             Some(role) => format!(r#"SET ROLE "{}""#, role),
             None => "RESET ROLE".to_string(),
         };
 
-        connection
+        client
             .batch_execute(&local_role_statement)
             .await
             .map_err(Error::Role)?;
 
-        Ok(Client(connection))
+        let cors = Arc::clone(&self.cors);
+
+        Ok(Client { cors, client })
     }
 }
 
@@ -124,8 +137,11 @@ impl From<RowStream> for JsonStream {
     }
 }
 
-/// Newtype wrapper around the client provided by deadpool_postgres
-pub struct Client(deadpool_postgres::Client);
+/// Wrapper around the client provided by deadpool_postgres
+pub struct Client {
+    cors: Arc<Cors>,
+    client: deadpool_postgres::Client,
+}
 
 #[async_trait::async_trait]
 impl Connection for Client {
@@ -138,7 +154,11 @@ impl Connection for Client {
         statement: &str,
         parameters: &[Self::Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
-        let prepared_statement = self.0.prepare_cached(statement).await?;
+        // test the statement against CORS rules
+        self.cors.test_statement(statement)?;
+
+        // prepare the statement using the statement cache
+        let prepared_statement = self.client.prepare_cached(statement).await?;
 
         // check parameter count to avoid panics
         let inferred_types = prepared_statement.params();
@@ -155,7 +175,9 @@ impl Connection for Client {
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
 
-                self.0.statement_cache.remove(statement, inferred_types);
+                self.client
+                    .statement_cache
+                    .remove(statement, inferred_types);
 
                 query_raw(self, statement, &prepared_statement, parameters).await
             }
@@ -166,7 +188,7 @@ impl Connection for Client {
     }
 
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
-        self.0.batch_execute(query).await?;
+        self.client.batch_execute(query).await?;
 
         Ok(())
     }
@@ -181,7 +203,10 @@ async fn query_raw(
 ) -> Result<RowStream, Error> {
     let rows = if prepared_statement.columns().is_empty() {
         // execute statements that return no data without modification
-        client.0.query_raw(prepared_statement, parameters).await?
+        client
+            .client
+            .query_raw(prepared_statement, parameters)
+            .await?
     } else {
         // wrap queries that return data in to_json()
         let json_statement = format!(
@@ -191,9 +216,12 @@ async fn query_raw(
             &statement
         );
 
-        let prepared_statement = client.0.prepare_cached(&json_statement).await?;
+        let prepared_statement = client.client.prepare_cached(&json_statement).await?;
 
-        client.0.query_raw(&prepared_statement, parameters).await?
+        client
+            .client
+            .query_raw(&prepared_statement, parameters)
+            .await?
     };
 
     Ok(rows)

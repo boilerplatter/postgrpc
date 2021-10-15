@@ -11,10 +11,12 @@ bytes = "1.1.0"
 deadpool = "0.8.2"
 deadpool-postgres = "0.9.0"
 futures-core = "0.3.17"
+pg_query = "0.1.1"
 pin-project-lite = "0.2.7"
 serde_json = "1.0.68"
 thiserror = "1.0.29"
 tracing = "0.1.26"
+Inflector = "0.11.4"
 
 [dependencies.native-tls]
 optional = true

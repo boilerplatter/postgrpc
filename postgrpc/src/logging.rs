@@ -46,7 +46,10 @@ impl OnFailure<GrpcFailureClass> for PostgrpcFailure {
                 let readable_code = Code::from_i32(code.into());
 
                 match readable_code {
-                    Code::NotFound | Code::InvalidArgument => {
+                    Code::NotFound
+                    | Code::InvalidArgument
+                    | Code::PermissionDenied
+                    | Code::Unauthenticated => {
                         tracing::warn!(code = ?readable_code, latency = %latency)
                     }
                     _ => {

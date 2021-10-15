@@ -66,6 +66,7 @@ fn error_to_status(error: postgres_role_json_pool::Error) -> Status {
         | postgres_role_json_pool::Error::Query(..) => Status::invalid_argument(message),
         postgres_role_json_pool::Error::Pool(..) => Status::resource_exhausted(message),
         postgres_role_json_pool::Error::InvalidJson => Status::internal(message),
+        postgres_role_json_pool::Error::Cors(..) => Status::permission_denied(message),
     }
 }
 
