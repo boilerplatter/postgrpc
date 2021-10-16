@@ -10,6 +10,7 @@ RUN rustup component add rustfmt
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && \
   apt-get install -y \
+  libclang-dev \
   libssl-dev \
   openssl \
   pkg-config

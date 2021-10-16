@@ -6,6 +6,8 @@ description = "Test Postgres-compatible statements against a set of CORS-like ru
 
 [dependencies]
 Inflector = "0.11.4"
-pg_query = "0.1.1"
 thiserror = "1.0.29"
 tracing = "0.1.26"
+
+[dependencies.pg_query]
+git = "https://github.com/NAlexPear/pg_query.rs.git"

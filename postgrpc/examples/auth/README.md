@@ -17,10 +17,11 @@ Instead, PostgRPC should use unprivileged ROLEs when connecting to databases, an
 
 This example uses [`docker-compose`](https://docs.docker.com/compose/) to spin up the following services:
 
-- [`app`]: a single-page app based on [`create-react-app`](https://create-react-app.dev/)
-- [`envoy`]: a JSON-transcoding proxy for `postgrpc` and `postgres` based on the `json-transcoding` example in this repo
-- [`kratos`]: an Identity and User Management API from [`ory`](https://www.ory.sh/kratos/docs/)
-- [`oathkeeper`]: an API Gateway from [`ory`](https://www.ory.sh/oathkeeper/docs/) that enforces Authorization and Authentication policies for upstream requests
+- `app`: a single-page app based on [`create-react-app`](https://create-react-app.dev/)
+- `envoy`: a JSON-transcoding proxy for `postgrpc` and `postgres` based on the `json-transcoding` example in this repo
+- `kratos`: an Identity and User Management API from [`ory`](https://www.ory.sh/kratos/docs/)
+- `oathkeeper`: an API Gateway from [`ory`](https://www.ory.sh/oathkeeper/docs/) that enforces Authorization and Authentication policies for upstream requests
+- `postgrpc-admin`: a private `postgrpc` instance that `kratos` uses to perform privileged actions like `CREATE USER`
 
 The web application is a very simple note-taking app with users managed by `kratos`. All user data is requested through `postgrpc` as JSON requests proxied through `envoy` and protected by `oathkeeper`.
 
@@ -35,7 +36,7 @@ To see how this is done, let's step through the entire user lifecycle:
 0. before the application starts, the Postgres database is configured with [an unprivileged `appuser` and row-level security on a `notes` table](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/init.sh)
 1. new users register through the web application at `/auth/registration`. Registration form submissions are sent to the `kratos` API.
 2. `kratos` validates the form submission, generates and stores an identity for this user, and executes [post-registration hooks](https://www.ory.sh/kratos/docs/self-service/hooks/#registration).
-3. the [configured `kratos` hooks](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/kratos.yml#L61) make JSON-based requests to `postgrpc` that [create a new Postgres user from the new identity](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/create_user.jsonnet#L2), [grant the user `appuser` the ability to set the active role to the new role](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/kratos.yml#L61), and [grants the new role CRUD permissions on the `notes` table](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/grant_ops.jsonnet#L2). If any of these hooks fail, user registration fails.
+3. the [configured `kratos` hooks](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/kratos.yml#L61) make JSON-based requests to `postgrpc-admin` that [creates a new Postgres user from the new identity](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/create_user.jsonnet), [grants the user `appuser` the ability to set the active role to the new role](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/grant_role.jsonnet), [grants usage of the `public` schema to the new role](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/grant_usage.jsonnet), and [grants the new role CRUD permissions on the `notes` table](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/kratos/grant_ops.jsonnet). If any of these hooks fail, user registration fails.
 4. Successful registration requests are returned from `kratos` with `Set-Cookie` headers that contain session information for the newly-registered user. These credentials will then be sent along with every request to `postgrpc`.
 5. When a user is logged in (i.e. has a valid session cookie), they are redirected to the `app` dashboard. From this dashboard, they can create, read, update, and delete short notes. These actions are performed through JSON-based requests to the `oathkeeper` proxy, which guards requests to the otherwise-hidden `potgrpc` service.
 6. When a user makes a request for note data (e.g. `select * from notes`), that request is sent to `oathkeeper`, which [retrieves session information from `kratos`](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/oathkeeper/oathkeeper.yml#L51) by forwarding the credentials included in the original request. If the included credentials are missing or invalid, the request is rejected.

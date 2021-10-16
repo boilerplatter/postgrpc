@@ -3,7 +3,7 @@
 
 use inflector::Inflector;
 use pg_query::ast::{
-    CommonTableExpr, DeleteStmt, FuncCall, InferClause, InsertStmt, Node, OnConflictClause,
+    CommonTableExpr, DeleteStmt, FuncCall, InferClause, InsertStmt, List, Node, OnConflictClause,
     ResTarget, SelectStmt, UpdateStmt,
 };
 use std::{
@@ -454,6 +454,16 @@ impl Guard {
         Ok(())
     }
 
+    fn test_list(&self, list: &List) -> Result<(), Error> {
+        let List { items } = list;
+
+        if let Some(nodes) = items {
+            self.test(&nodes)?;
+        }
+
+        Ok(())
+    }
+
     fn test<N>(&self, nodes: &[N]) -> Result<(), Error>
     where
         N: std::borrow::Borrow<Node> + fmt::Debug,
@@ -501,6 +511,9 @@ impl Guard {
                 }
                 Node::ResTarget(res_target) => {
                     self.test_res_target(res_target)?;
+                }
+                Node::List(list) => {
+                    self.test_list(list)?;
                 }
                 // reject privileged statements and commands out-of-hand
                 Node::AlterCollationStmt(..)

@@ -51,6 +51,20 @@ services:
     volumes:
       - ./envoy.yaml:/envoy.yaml
       - ./postgrpc.pb:/proto/postgrpc.pb
+  postgrpc-admin:
+    build:
+      context: ../../../
+      dockerfile: postgrpc/Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      - PORT=50052
+      - HOST=0.0.0.0
+      - PGHOST=postgres
+      - PGDBNAME=appdb
+      - PGUSER=appuser
+      - PGPASSWORD=supersecretpassword
+      - RUST_LOG=info
   postgrpc:
     build:
       context: ../../../
@@ -58,12 +72,15 @@ services:
     depends_on:
       - postgres
     environment:
+      - PORT=50051
       - HOST=0.0.0.0
       - PGHOST=postgres
       - PGDBNAME=appdb
       - PGUSER=appuser
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
+      - ALLOWED_FUNCTIONS=
+      - ALLOWED_STATEMENTS=select,insert,update,delete
   postgres:
     image: postgres
     environment:
