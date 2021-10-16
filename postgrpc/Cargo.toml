@@ -51,7 +51,8 @@ features = ["trace"]
 version = "0.1.1"
 
 [features]
-default = ["transaction", "ssl-native-tls", "role-header"]
+default = ["cors", "transaction", "ssl-native-tls", "role-header"]
+cors = ["postgres-role-json-pool/postguard"]
 transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
 ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
 role-header = []

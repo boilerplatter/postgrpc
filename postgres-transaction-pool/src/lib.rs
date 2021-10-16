@@ -41,6 +41,8 @@ const INACTIVE_THRESHOLD_SECONDS: u64 = 30;
 /// Time limit in seconds for any transaction, regardless of usage
 const TRANSACTION_LIFETIME_LIMIT_SECONDS: u64 = 30 * 60;
 
+// FIXME: add a concurrent transaction limit by key
+
 /// Cached transaction data for an individual active transaction
 pub struct Transaction<C>
 where

@@ -3,16 +3,13 @@
 //! then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
 //! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 //! returning rows as a stream of JSON Objects.
-
 #![deny(missing_docs, unreachable_pub)]
 
-use cors::Cors;
 use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
 use postgres_pool::Connection;
 use std::{
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use thiserror::Error;
@@ -24,14 +21,14 @@ use tokio_postgres::{
 
 /// Configure the connection pool
 pub mod configuration;
-mod cors; // FIXME: feature flag
 
 /// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
 pub enum Error {
     /// Statement failed to pass CORS restrictions
+    #[cfg(feature = "postguard")]
     #[error(transparent)]
-    Cors(#[from] cors::Error),
+    Cors(#[from] postguard::Error),
     /// Parameters did not match the number of parameters inferred by statement preparation
     #[error("Expected {expected} parameters but found {actual} instead")]
     Params {
@@ -63,16 +60,22 @@ type Role = Option<String>;
 // this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
 #[derive(Clone)]
 pub struct Pool {
-    cors: Arc<Cors>,
     config: deadpool_postgres::Config,
     pool: deadpool_postgres::Pool,
+    #[cfg(feature = "postguard")]
+    statement_guard: std::sync::Arc<postguard::Guard>,
 }
 
 impl Pool {
     /// Create a new pool from `deadpool_postgres`'s constituent parts
-    fn new(config: deadpool_postgres::Config, pool: deadpool_postgres::Pool, cors: Cors) -> Self {
+    fn new(
+        config: deadpool_postgres::Config,
+        pool: deadpool_postgres::Pool,
+        #[cfg(feature = "postguard")] statement_guard: postguard::Guard,
+    ) -> Self {
         Self {
-            cors: Arc::new(cors),
+            #[cfg(feature = "postguard")]
+            statement_guard: std::sync::Arc::new(statement_guard),
             config,
             pool,
         }
@@ -98,9 +101,18 @@ impl postgres_pool::Pool for Pool {
             .await
             .map_err(Error::Role)?;
 
-        let cors = Arc::clone(&self.cors);
+        #[cfg(feature = "postguard")]
+        {
+            let statement_guard = std::sync::Arc::clone(&self.statement_guard);
 
-        Ok(Client { cors, client })
+            Ok(Client {
+                client,
+                statement_guard,
+            })
+        }
+
+        #[cfg(not(feature = "postguard"))]
+        Ok(Client { client })
     }
 }
 
@@ -139,8 +151,9 @@ impl From<RowStream> for JsonStream {
 
 /// Wrapper around the client provided by deadpool_postgres
 pub struct Client {
-    cors: Arc<Cors>,
     client: deadpool_postgres::Client,
+    #[cfg(feature = "postguard")]
+    statement_guard: std::sync::Arc<postguard::Guard>,
 }
 
 #[async_trait::async_trait]
@@ -155,7 +168,8 @@ impl Connection for Client {
         parameters: &[Self::Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
         // test the statement against CORS rules
-        self.cors.test_statement(statement)?;
+        #[cfg(feature = "postguard")]
+        self.statement_guard.guard(statement)?;
 
         // prepare the statement using the statement cache
         let prepared_statement = self.client.prepare_cached(statement).await?;

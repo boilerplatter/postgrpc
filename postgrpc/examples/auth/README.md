@@ -45,9 +45,11 @@ To see how this is done, let's step through the entire user lifecycle:
 
 Thanks to this interplay between Postgres, PostgRPC, Kratos, Oathkeeper, and browser-based Cookies, we can more confidently expose the PostgRPC query interface to untrusted environments like the public web.
 
-# TODO: implement all of these in PostgRPC or in the example stack
+### Additional Security
 
-1. malicious users can spam an endpoint even with valid credentials, so make sure that you have [rate-limiting configured somewhere in your network stack](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter)
-2. malicious users can invoke queries that are computationally-expensive, so make sure that you've configured an appropriate [`statement_timeout`](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter) for all sessions
-3. malicious users can tie up database connections by starting large numbers of transactions at once. Be sure to configure PostgRPCs `TRANSACTION_LIMIT` or avoid exposing the transaction service publicly
-4. malicious users can set session variables that might affect subsequent queries. Be sure to register queries with PostgRPC to restrict the queries that can be run against shared connections
+As with any public API, authentication and authorization are only a part of the security picture. This example also includes the following countermeasures against malicious users:
+
+1. properly auth'd users can still spam an endpoint with requests, so this example uses [`envoy`'s built-in rate-limiting](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter) to limit requests by `X-Postgres-Role`.
+2. malicious users can invoke queries that are computationally-expensive. This example sets a low `STATEMENT_TIMEOUT` to keep large queries from tying up too many connections and restricts the use of potentially expensive functions by preventing all function execution through the `ALLOWED_FUNCTIONS` configuration.
+3. malicious users can tie up database connections by starting large numbers of transactions at once, so this example [disables the `transaction` service entirely](https://github.com/boilerplatter/postgrpc/blob/master/postgrpc/examples/auth/envoy.yaml#L34) at the proxy level. Another alternative would be to configure `MAX_CONNECTIONS` for each role.
+4. because of the way connections are re-used in the pool, clever users could `SET` session-level values that affect subsequent queries. This example prevents these kinds of malicious queries by restricting statements to `SELECT`,`INSERT`,`UPDATE`, and `DELETE` in queries through the `ALLOWED_STATEMENTS` configuration.

@@ -1033,17 +1033,16 @@ dependencies = [
 name = "postgres-role-json-pool"
 version = "0.1.0"
 dependencies = [
- "Inflector",
  "async-trait",
  "bytes",
  "deadpool",
  "deadpool-postgres",
  "futures-core",
  "native-tls",
- "pg_query",
  "pin-project-lite",
  "postgres-native-tls",
  "postgres-pool",
+ "postguard",
  "serde",
  "serde_json",
  "thiserror",
@@ -1112,6 +1111,16 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "postguard"
+version = "0.1.0"
+dependencies = [
+ "Inflector",
+ "pg_query",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

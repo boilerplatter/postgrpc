@@ -1,0 +1,11 @@
+[package]
+name = "postguard"
+version = "0.1.0"
+edition = "2018"
+description = "Test Postgres-compatible statements against a set of CORS-like rules"
+
+[dependencies]
+Inflector = "0.11.4"
+pg_query = "0.1.1"
+thiserror = "1.0.29"
+tracing = "0.1.26"
