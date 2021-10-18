@@ -1,6 +1,7 @@
 version: "3.9"
 
 services:
+  # database migrations for kratos
   kratos-migrate:
     image: oryd/kratos:v0.7.4-alpha.1-sqlite
     environment:
@@ -14,6 +15,8 @@ services:
         source: ./kratos
         target: /etc/config/kratos
     command: -c /etc/config/kratos/kratos.yml migrate sql -e --yes
+
+  # ory kratos identity management API
   kratos:
     depends_on:
       - kratos-migrate
@@ -33,24 +36,52 @@ services:
       - type: bind
         source: ./kratos
         target: /etc/config/kratos
+
+  # ory oathkeeper API gateway
   oathkeeper:
     image: oryd/oathkeeper:v0.38
     depends_on:
       - kratos
+      - envoy
     ports:
       - 8888:8888
     command:
       serve proxy -c /etc/config/oathkeeper/oathkeeper.yml
     volumes:
       - ./oathkeeper:/etc/config/oathkeeper
+
+  # envoy proxy
   envoy:
     image: envoyproxy/envoy:v1.20.0
     command: envoy -c /envoy.yaml
     depends_on:
+      - ratelimit
       - postgrpc
     volumes:
       - ./envoy.yaml:/envoy.yaml
       - ./postgrpc.pb:/proto/postgrpc.pb
+
+  # envoy ratelimiter
+  ratelimit:
+    image: envoyproxy/ratelimit:master
+    command: /bin/ratelimit
+    depends_on:
+      - redis
+    volumes:
+      - ./ratelimit.yaml:/srv/runtime_data/current/ratelimit/config/config.yaml
+    environment:
+      - LOG_LEVEL=info
+      - USE_STATSD=false
+      - REDIS_SOCKET_TYPE=tcp
+      - REDIS_URL=redis:6379
+      - RUNTIME_SUBDIRECTORY=ratelimit
+      - RUNTIME_WATCH_ROOT=false
+
+  # redis database for rate limiting
+  redis:
+    image: redis:alpine
+
+  # admin postgrpc instance
   postgrpc-admin:
     build:
       context: ../../../
@@ -66,6 +97,8 @@ services:
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
       - TERMINATION_PERIOD=1000
+
+  # user-facing postgrpc instance
   postgrpc:
     build:
       context: ../../../
@@ -84,12 +117,16 @@ services:
       - TERMINATION_PERIOD=1000
       - ALLOWED_FUNCTIONS=
       - ALLOWED_STATEMENTS=select,insert,update,delete
+
+  # postgres database for postgrpc
   postgres:
     image: postgres
     environment:
       - POSTGRES_PASSWORD=superuserpassword
     volumes:
       - ./init.sh:/docker-entrypoint-initdb.d/init.sh
+
+  # web application for end users
   app:
     build:
       context: ./app

@@ -23,9 +23,24 @@ static_resources:
                     route:
                       cluster: postgrpc
                       timeout: 0s
+                      rate_limits:
+                        - actions:
+                          - request_headers:
+                              header_name: "x-postgres-role"
+                              descriptor_key: role
                       max_stream_duration:
                         grpc_timeout_header_max: 0s
             http_filters:
+              - name: envoy.filters.http.ratelimit
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+                  domain: postgrpc
+                  rate_limited_as_resource_exhausted: true
+                  rate_limit_service:
+                    grpc_service:
+                      envoy_grpc:
+                        cluster_name: ratelimit
+                    transport_api_version: v3
               - name: envoy.filters.http.grpc_json_transcoder
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder
@@ -119,3 +134,18 @@ static_resources:
                 socket_address:
                   address: postgrpc-admin
                   port_value: 50052
+    - name: ratelimit
+      type: strict_dns
+      connect_timeout: 1s
+      lb_policy: round_robin
+      protocol_selection: use_configured_protocol
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ratelimit
+        endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: ratelimit
+                    port_value: 8081
