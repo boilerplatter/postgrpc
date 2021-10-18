@@ -3,14 +3,17 @@
 
 use inflector::Inflector;
 use pg_query::ast::{
-    CommonTableExpr, DeleteStmt, FuncCall, InferClause, InsertStmt, List, Node, OnConflictClause,
-    ResTarget, SelectStmt, UpdateStmt,
+    A_Expr, CaseExpr, CaseWhen, CommonTableExpr, DeleteStmt, FuncCall, InferClause, InsertStmt,
+    JoinExpr, List, Node, OnConflictClause, ResTarget, SelectStmt, UpdateStmt,
 };
 use std::{
     fmt::{self, Formatter},
     str::FromStr,
 };
 use thiserror::Error;
+
+#[cfg(test)]
+mod test;
 
 /// Errors related to statement rejection or parsing failures
 #[derive(Debug, Error)]
@@ -171,7 +174,6 @@ impl Default for AllowedFunctions {
 pub struct Guard {
     allowed_statements: AllowedStatements,
     allowed_functions: AllowedFunctions,
-    // TODO: test performance with fingerprinted statement cache
 }
 
 impl Guard {
@@ -400,6 +402,26 @@ impl Guard {
         Ok(())
     }
 
+    fn test_a_expr(&self, a_expr: &A_Expr) -> Result<(), Error> {
+        let A_Expr {
+            name, lexpr, rexpr, ..
+        } = a_expr;
+
+        if let Some(nodes) = name {
+            self.test(&nodes)?;
+        }
+
+        if let Some(node) = lexpr {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(node) = rexpr {
+            self.test(&[&**node])?;
+        }
+
+        Ok(())
+    }
+
     fn test_cte(&self, cte: &CommonTableExpr) -> Result<(), Error> {
         let CommonTableExpr {
             aliascolnames,
@@ -464,6 +486,76 @@ impl Guard {
         Ok(())
     }
 
+    fn test_case_when(&self, case_when: &CaseWhen) -> Result<(), Error> {
+        let CaseWhen { expr, result, .. } = case_when;
+
+        if let Some(node) = expr {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(node) = result {
+            self.test(&[&**node])?;
+        }
+
+        Ok(())
+    }
+
+    fn test_case_expr(&self, case_expr: &CaseExpr) -> Result<(), Error> {
+        let CaseExpr {
+            arg,
+            args,
+            defresult,
+            ..
+        } = case_expr;
+
+        if let Some(node) = arg {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(nodes) = args {
+            self.test(&nodes)?;
+        }
+
+        if let Some(node) = defresult {
+            self.test(&[&**node])?;
+        }
+
+        Ok(())
+    }
+
+    fn test_join_expr(&self, join_expr: &JoinExpr) -> Result<(), Error> {
+        let JoinExpr {
+            larg,
+            rarg,
+            using_clause,
+            quals,
+            alias,
+            ..
+        } = join_expr;
+
+        if let Some(node) = larg {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(node) = rarg {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(nodes) = using_clause {
+            self.test(&nodes)?;
+        }
+
+        if let Some(node) = quals {
+            self.test(&[&**node])?;
+        }
+
+        if let Some(nodes) = alias.as_ref().and_then(|alias| alias.colnames.as_ref()) {
+            self.test(&nodes)?;
+        }
+
+        Ok(())
+    }
+
     fn test<N>(&self, nodes: &[N]) -> Result<(), Error>
     where
         N: std::borrow::Borrow<Node> + fmt::Debug,
@@ -506,6 +598,9 @@ impl Guard {
 
                     self.test_delete(delete_statement)?;
                 }
+                Node::A_Expr(a_expr) => {
+                    self.test_a_expr(a_expr)?;
+                }
                 Node::CommonTableExpr(common_table_expression) => {
                     self.test_cte(common_table_expression)?;
                 }
@@ -514,6 +609,15 @@ impl Guard {
                 }
                 Node::List(list) => {
                     self.test_list(list)?;
+                }
+                Node::CaseWhen(case_when) => {
+                    self.test_case_when(case_when)?;
+                }
+                Node::CaseExpr(case_expr) => {
+                    self.test_case_expr(case_expr)?;
+                }
+                Node::JoinExpr(join_expr) => {
+                    self.test_join_expr(join_expr)?;
                 }
                 // reject privileged statements and commands out-of-hand
                 Node::AlterCollationStmt(..)
@@ -628,7 +732,7 @@ impl Guard {
                 | Node::VariableShowStmt(..)
                 | Node::ViewStmt(..)
                 | Node::XmlSerialize(..) => {
-                    tracing::warn!(node = ?&node, "rejected query due to precense of banned node");
+                    tracing::warn!(node = ?&node, "rejected query due to presence of banned node");
 
                     match self.allowed_statements {
                         AllowedStatements::All => (),

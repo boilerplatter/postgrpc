@@ -11,3 +11,6 @@ tracing = "0.1.26"
 
 [dependencies.pg_query]
 git = "https://github.com/NAlexPear/pg_query.rs.git"
+
+[dev-dependencies]
+tracing-test = "*"

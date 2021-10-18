@@ -31,15 +31,15 @@ PostgRPC fills a similar niche as the excellent [PostgREST](https://postgrest.or
 
 ### Goals
 
-- **Performance**: running sequential queries over a persistent connection will always be the fastest option, but using PostgRPC should be the next-best option. Where concurrent requests are needed, and where those requests scale up faster than connections, PostgRPC should handle more concurrent requests than any other direct-connection-based connection pool solution.
+- **Performance**: running a query over a persistent connection will always be the fastest option, but using PostgRPC should be the next-best option. Where concurrent queries are needed, and where those queries scale up faster than connections, PostgRPC should handle more concurrent query requests than any other direct-connection-based connection pool solution.
 - **Primitive Focus**: where Postgres has a feature, PostgRPC should support that feature through the query interface. Where this is impossible, PostgRPC should strive to provide a distributed equivalent.
 - **Ease-of-Use**: those looking to get started with PostgRPC should be able to spin it up as a service quickly on a variety of systems. PostgRPC should ship with sane defaults for most use-cases.
-- **JSON-first**: PostgRPC should accomdate the flexibility of JSON in inputs and outputs rather than mapping JSON or `gRPC` types to Postgres types. This includes leveraging Postgres's built-in type inference wherever possible.
+- **Type Inference**: PostgRPC should accomdate the flexibility of JSON in inputs and outputs rather than mapping JSON or `gRPC` types to Postgres types. This includes leveraging Postgres's built-in type inference wherever possible.
 - **Customization**: PostgRPC should be a reference implementation of a `gRPC` service that can be easily re-implemented over custom connection pool logic. `postgres-services` should be usable by anyone looking to use a different protocol to query connection pools that implement the `Pool` and `Connection` traits from `postgres-pool`.
 
 ### Non-Goals
 
-- **Auth**: PostgRPC does not include auth mechanisms beyond those provided by the Postgres database itself. Setting the Postgres `ROLE` can be done through an `X-Postgres-Role` header, and deriving that role properly is the responsibility of other services better suited to the task (e.g. [Ory Oathkeeper](https://www.ory.sh/oathkeeper/docs/next/))
+- **Auth**: PostgRPC does not include authentication or authorization mechanisms beyond those provided by the Postgres database itself. Setting the Postgres `ROLE` can be done through an `X-Postgres-Role` header, and correctly deriving the value of that header is the responsibility of other services better suited to the task (e.g. [Ory Oathkeeper](https://www.ory.sh/oathkeeper/docs/next/))
 - **Strict Request Types**: PostgRPC will not support binary encoding of custom or extension-provided types. Instead, all types will be inferred or coerced through Postgres itself. Where type inference or coercion is unsufficient, queries should use text parameters and type hints in the query itself to convert values appropriately.
 - **All-in-One**: PostgRPC does not replace your application stack. Instead, PostgRPC is a sharp tool that's easy to integrate into a toolbox that includes things like user management, load balancing, and routing of traffic from public endpoints. Do _not_ expose your database publicly through PostgRPC unless you know what you're doing (and even then, consider alternatives like those found in the `examples` directory).
 
@@ -104,4 +104,4 @@ All examples can be run from the `./examples` directory using `docker-compose`. 
 
 1. **Who built PostgRPC?** The team at [Platter](https://platter.dev). Every Platter Postgres branching database comes with a `gRPC` and `JSON` interface much like this one.
 2. **Is PostgRPC ready for production?** If you're running this yourself, be sure to run it as a part of a stack that includes robust authentication and authorization, and ensure that you harden your Postgres database against malicious queries! If that sounds daunting, consider using [Platter](https://platter.dev). 
-3. **How do you pronounce PostgRPC?** Up for debate, but "post-ger-puck" is our favorite.
+3. **How do you pronounce PostgRPC?** "post-ger-puck"
