@@ -11,6 +11,7 @@ use postgres_pool::Connection;
 use std::{
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 use thiserror::Error;
 use tokio_postgres::{
@@ -62,6 +63,7 @@ type Role = Option<String>;
 pub struct Pool {
     config: deadpool_postgres::Config,
     pool: deadpool_postgres::Pool,
+    statement_timeout: Option<Duration>,
     #[cfg(feature = "postguard")]
     statement_guard: std::sync::Arc<postguard::Guard>,
 }
@@ -71,13 +73,15 @@ impl Pool {
     fn new(
         config: deadpool_postgres::Config,
         pool: deadpool_postgres::Pool,
+        statement_timeout: Option<Duration>,
         #[cfg(feature = "postguard")] statement_guard: postguard::Guard,
     ) -> Self {
         Self {
-            #[cfg(feature = "postguard")]
-            statement_guard: std::sync::Arc::new(statement_guard),
             config,
             pool,
+            statement_timeout,
+            #[cfg(feature = "postguard")]
+            statement_guard: std::sync::Arc::new(statement_guard),
         }
     }
 }
@@ -91,6 +95,7 @@ impl postgres_pool::Pool for Pool {
     async fn get_connection(&self, key: Option<String>) -> Result<Self::Connection, Self::Error> {
         let client = self.pool.get().await?;
 
+        // configure the connection's ROLE
         let local_role_statement = match key {
             Some(role) => format!(r#"SET ROLE "{}""#, role),
             None => "RESET ROLE".to_string(),
@@ -100,6 +105,16 @@ impl postgres_pool::Pool for Pool {
             .batch_execute(&local_role_statement)
             .await
             .map_err(Error::Role)?;
+
+        // set the statement_timeout for the session
+        if let Some(statement_timeout) = self.statement_timeout {
+            client
+                .batch_execute(&format!(
+                    "SET statement_timeout={}",
+                    statement_timeout.as_millis()
+                ))
+                .await?;
+        }
 
         #[cfg(feature = "postguard")]
         {

@@ -57,7 +57,8 @@ PostgRPC can be configured with the following environment variables:
 
 - `HOST`: the host that the `postgrpc` service uses. Defaults to `127.0.0.1`.
 - `PORT`: the port that the `postgrpc` service uses. Defaults to `50051`. 
-- `TERMINATION_PERIOD`: the number of seconds `postgrpc` wait before shutting down on `SIGTERM` signals. `postgrpc` shuts down gracefully, waiting for requests to finish where possible. This value is useful for waiting for proxies like `envoy` to drain, allowing `postgrpc` to handle those requests without error as long as they take less than `TERMINATION_PERIOD` seconds.
+- `TERMINATION_PERIOD`: the number of milliseconds `postgrpc` waits before shutting down on `SIGTERM` signals. `postgrpc` shuts down gracefully, waiting for requests to finish where possible. This value is useful for waiting for proxies like `envoy` to drain, allowing `postgrpc` to handle those requests without error as long as they take less than `TERMINATION_PERIOD` milliseconds.
+- `STATEMENT_TIMEOUT`: the number of milliseconds `postgrpc` waits before aborting queries.
 - `PGDBNAME` (required): the name of the Postgres database to connect to.
 - `PGHOST`: the host of the Postgres cluster to connect to. Defaults to `localhost`.
 - `PGPASSWORD` (required): the password of the user to use when connecting to the Postgres database.

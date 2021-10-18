@@ -82,12 +82,18 @@ async fn run_service() -> Result<(), Error> {
 
     let shutdown = async move {
         termination.recv().await;
+
         tracing::info!("SIGTERM heard in PostgRPC service");
-        tracing::info!(
-            grace_period_seconds = grace_period.as_secs(),
-            "Waiting for graceful termination period before shutdown"
-        );
-        tokio::time::sleep(grace_period).await;
+
+        if let Some(grace_period) = grace_period {
+            tracing::info!(
+                grace_period_seconds = grace_period.as_secs(),
+                "Waiting for graceful termination period before shutdown"
+            );
+
+            tokio::time::sleep(grace_period).await;
+        }
+
         tracing::info!("Shutting down PostgRPC service");
     };
 

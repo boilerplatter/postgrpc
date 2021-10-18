@@ -26,11 +26,6 @@ pub enum Error {
     Tls(#[from] native_tls::Error),
 }
 
-// FIXME: include and implement the following
-// MAX_CONNECTIONS -> the maximum number of connections allowed per key
-// STATEMENT_TIMEOUT -> the maximum amount of time to wait for a statement over a connection before
-// aborting the thing
-
 /// Environment-derived configuration for the default pool
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
@@ -48,9 +43,12 @@ pub struct Configuration {
     /// service port
     #[serde(default = "get_service_port")]
     pub port: u16,
-    /// termination grace period duration (in seconds)
-    #[serde(default, deserialize_with = "from_seconds_string")]
-    pub termination_period: Duration,
+    /// maximum amount of time to wait for a statement to complete (in milliseconds)
+    #[serde(default, deserialize_with = "from_milliseconds_string")]
+    pub statement_timeout: Option<Duration>,
+    /// termination grace period duration (in milliseconds)
+    #[serde(default, deserialize_with = "from_milliseconds_string")]
+    pub termination_period: Option<Duration>,
     /// Postgres database to connect to
     pub pgdbname: String,
     /// host to use for database connections
@@ -85,16 +83,20 @@ fn get_postgres_port() -> u16 {
     5432
 }
 
-/// Deserializer for termination_period seconds, passed through the environment as a string
-fn from_seconds_string<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+/// Deserializer for milliseconds, passed through the environment as a string
+fn from_milliseconds_string<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let base_string = String::deserialize(deserializer)?;
-    let parsed_seconds: u64 = base_string.parse().map_err(serde::de::Error::custom)?;
-    let duration = Duration::from_secs(parsed_seconds);
+    if base_string.is_empty() {
+        Ok(None)
+    } else {
+        let parsed_millis: u64 = base_string.parse().map_err(serde::de::Error::custom)?;
+        let duration = Duration::from_millis(parsed_millis);
 
-    Ok(duration)
+        Ok(Some(duration))
+    }
 }
 
 #[cfg(feature = "postguard")]
@@ -159,15 +161,20 @@ impl TryFrom<Configuration> for Pool {
         #[cfg(feature = "postguard")]
         {
             // generate statement guards from the configuration
-            let cors = postguard::Guard::new(
+            let statement_guard = postguard::Guard::new(
                 configuration.allowed_statements,
                 configuration.allowed_functions,
             );
 
-            Ok(Self::new(config, pool, cors))
+            Ok(Self::new(
+                config,
+                pool,
+                configuration.statement_timeout,
+                statement_guard,
+            ))
         }
 
         #[cfg(not(feature = "postguard"))]
-        Ok(Self::new(config, pool))
+        Ok(Self::new(config, pool, configuration.statement_timeout))
     }
 }

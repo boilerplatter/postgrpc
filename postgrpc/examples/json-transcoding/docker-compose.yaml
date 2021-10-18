@@ -13,7 +13,7 @@ services:
       - PGUSER=postgres
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
-      - TERMINATION_PERIOD=10
+      - TERMINATION_PERIOD=1000
   postgres:
     image: postgres
     environment:

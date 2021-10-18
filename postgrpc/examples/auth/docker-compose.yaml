@@ -65,6 +65,7 @@ services:
       - PGUSER=appuser
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
+      - TERMINATION_PERIOD=1000
   postgrpc:
     build:
       context: ../../../
@@ -79,6 +80,8 @@ services:
       - PGUSER=appuser
       - PGPASSWORD=supersecretpassword
       - RUST_LOG=info
+      - STATEMENT_TIMEOUT=500
+      - TERMINATION_PERIOD=1000
       - ALLOWED_FUNCTIONS=
       - ALLOWED_STATEMENTS=select,insert,update,delete
   postgres:
