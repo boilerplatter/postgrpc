@@ -1,0 +1,6 @@
+[
+    "select * from items",
+    "insert into items (id, name) values ($1, $2)",
+    "update items set id = $1 where name = $2",
+    "delete from items"
+]

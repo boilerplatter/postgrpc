@@ -1,0 +1,6 @@
+[
+    "bad query",
+    "alter 1234",
+    "notify channel foo",
+    "delete * from items"
+]

@@ -11,6 +11,13 @@ tracing = "0.1.26"
 
 [dependencies.pg_query_rust]
 git = "https://github.com/NAlexPear/pg_query_rust.git"
+rev = "db7aaf6"
 
 [dev-dependencies]
+once_cell = "*"
+serde_json = "*"
 tracing-test = "*"
+
+[dev-dependencies.serde]
+features = ["derive"]
+version = "*"

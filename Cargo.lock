@@ -646,9 +646,9 @@ dependencies = [
 
 [[package]]
 name = "instant"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "716d3d89f35ac6a34fd0eed635395f4c3b76fa889338a4632e5231a8684216bd"
+checksum = "7a5bbe824c507c5da5956355e86a746d82e0e1464f65d862cc5e71da70e94b2c"
 dependencies = [
  "cfg-if",
 ]
@@ -965,13 +965,13 @@ dependencies = [
 [[package]]
 name = "pg_query_rust"
 version = "0.1.0"
-source = "git+https://github.com/NAlexPear/pg_query_rust.git#db7aaf6e6141c40756cc88f0358a6f0a290ad484"
+source = "git+https://github.com/NAlexPear/pg_query_rust.git?rev=db7aaf6#db7aaf6e6141c40756cc88f0358a6f0a290ad484"
 dependencies = [
  "bindgen",
  "bytes",
  "prost 0.9.0",
  "prost-build 0.9.0",
- "prost-types 0.8.0",
+ "prost-types 0.9.0",
  "thiserror",
 ]
 
@@ -1159,7 +1159,10 @@ name = "postguard"
 version = "0.1.0"
 dependencies = [
  "Inflector",
+ "once_cell",
  "pg_query_rust",
+ "serde",
+ "serde_json",
  "thiserror",
  "tracing",
  "tracing-test",
@@ -1715,9 +1718,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-postgres"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f916ee7e52c8a74dfe4162dd73a073d0d7d4b387ea7b97a774c0c10b0776531"
+checksum = "b5c07a6ceeeb8515d53998ac4487788a21884e79d5651490bc31a7289f20a7d7"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -1821,9 +1824,9 @@ dependencies = [
 
 [[package]]
 name = "tower"
-version = "0.4.9"
+version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d15a6b60cdff0cb039d81d3b37f8bc3d7e53dca09069aae3ef2502ca4834fe30"
+checksum = "c00e500fff5fa1131c866b246041a6bf96da9c965f8fe4128cb1421f23e93c00"
 dependencies = [
  "futures-core",
  "futures-util",

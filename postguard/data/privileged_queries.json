@@ -1,0 +1,7 @@
+[
+    "set statement_timeout=123",
+    "create table items (id serial primary key)",
+    "create database testdb owner postgres",
+    "listen channel",
+    "notify channel '{\"hello\":\"world\"}'"
+]
