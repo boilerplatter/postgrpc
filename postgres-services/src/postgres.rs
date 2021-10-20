@@ -31,7 +31,7 @@ where
             .pool
             .get_connection(key)
             .await?
-            .query(statement, &parameters)
+            .query(statement, parameters)
             .await?;
 
         Ok(rows)

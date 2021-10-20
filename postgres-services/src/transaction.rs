@@ -57,7 +57,7 @@ where
             .pool
             .get_connection(transaction_key)
             .await?
-            .query(statement, &parameters)
+            .query(statement, parameters)
             .await
             .map_err(postgres_transaction_pool::Error::Connection)?;
 

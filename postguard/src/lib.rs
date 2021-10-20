@@ -2,9 +2,9 @@
 #![deny(missing_docs, unreachable_pub)]
 
 use inflector::Inflector;
-use pg_query::ast::{
-    A_Expr, CaseExpr, CaseWhen, CommonTableExpr, DeleteStmt, FuncCall, InferClause, InsertStmt,
-    JoinExpr, List, Node, OnConflictClause, ResTarget, SelectStmt, UpdateStmt,
+use pg_query_rust::{
+    node, AArrayExpr, AExpr, CaseExpr, CaseWhen, CommonTableExpr, DeleteStmt, InferClause,
+    InsertStmt, JoinExpr, List, Node, OnConflictClause, RawStmt, ResTarget, SelectStmt, UpdateStmt,
 };
 use std::{
     fmt::{self, Formatter},
@@ -37,12 +37,12 @@ pub enum Error {
     Parse(String),
 }
 
-impl From<pg_query::Error> for Error {
-    fn from(error: pg_query::Error) -> Self {
+impl From<pg_query_rust::Error> for Error {
+    fn from(error: pg_query_rust::Error) -> Self {
         match error {
-            pg_query::Error::ParseError(error)
-            | pg_query::Error::InvalidAst(error)
-            | pg_query::Error::InvalidJson(error) => Self::Parse(error),
+            pg_query_rust::Error::Conversion(error) => Self::Parse(error.to_string()),
+            pg_query_rust::Error::Decode(error) => Self::Parse(error.to_string()),
+            pg_query_rust::Error::Parse(error) => Self::Parse(error),
         }
     }
 }
@@ -192,9 +192,12 @@ impl Guard {
             (AllowedStatements::All, AllowedFunctions::All) => Ok(()),
             // all other cases need statement parsing
             _ => {
-                let nodes = pg_query::parse(statement)?;
+                let statements = pg_query_rust::parse(statement)?
+                    .stmts
+                    .into_iter()
+                    .filter_map(|RawStmt { stmt, .. }| stmt);
 
-                self.test(&nodes)
+                self.test(statements)
             }
         }
     }
@@ -218,53 +221,20 @@ impl Guard {
             ..
         } = statement;
 
-        // test each part of the Select statement recursively
-        if let Some(nodes) = distinct_clause {
-            self.test(&nodes)?;
-        }
+        self.test(distinct_clause)?;
+        self.test(target_list)?;
+        self.test(from_clause)?;
+        self.test(where_clause.as_deref())?;
+        self.test(group_clause)?;
+        self.test(having_clause.as_deref())?;
+        self.test(window_clause)?;
+        self.test(values_lists)?;
+        self.test(limit_offset.as_deref())?;
+        self.test(limit_count.as_deref())?;
+        self.test(locking_clause)?;
 
-        if let Some(nodes) = target_list {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = from_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = where_clause {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = group_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = having_clause {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = window_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = values_lists {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = limit_offset {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(node) = limit_count {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = locking_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = with_clause.as_ref().and_then(|with| with.ctes.as_ref()) {
-            self.test(&nodes)?;
+        if let Some(with_clause) = with_clause {
+            self.test(&with_clause.ctes)?;
         }
 
         // test each side of UNION opts as select statements only
@@ -289,24 +259,13 @@ impl Guard {
             ..
         } = statement;
 
-        if let Some(nodes) = target_list {
-            self.test(&nodes)?;
-        }
+        self.test(target_list)?;
+        self.test(where_clause.as_deref())?;
+        self.test(from_clause)?;
+        self.test(returning_list)?;
 
-        if let Some(node) = where_clause {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = from_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = returning_list {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = with_clause.as_ref().and_then(|with| with.ctes.as_ref()) {
-            self.test(&nodes)?;
+        if let Some(with_clause) = with_clause {
+            self.test(&with_clause.ctes)?;
         }
 
         Ok(())
@@ -322,20 +281,12 @@ impl Guard {
             ..
         } = statement;
 
-        if let Some(nodes) = cols {
-            self.test(&nodes)?;
-        }
+        self.test(cols)?;
+        self.test(select_stmt.as_deref())?;
+        self.test(returning_list)?;
 
-        if let Some(node) = select_stmt {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = returning_list {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = with_clause.as_ref().and_then(|with| with.ctes.as_ref()) {
-            self.test(&nodes)?;
+        if let Some(with_clause) = with_clause {
+            self.test(&with_clause.ctes)?;
         }
 
         if let Some(on_conflict_clause) = on_conflict_clause {
@@ -346,13 +297,8 @@ impl Guard {
                 ..
             } = on_conflict_clause.as_ref();
 
-            if let Some(nodes) = target_list {
-                self.test(&nodes)?;
-            }
-
-            if let Some(node) = where_clause {
-                self.test(&[&**node])?;
-            }
+            self.test(target_list)?;
+            self.test(where_clause.as_deref())?;
 
             if let Some(infer_clause) = infer {
                 let InferClause {
@@ -361,13 +307,8 @@ impl Guard {
                     ..
                 } = infer_clause.as_ref();
 
-                if let Some(nodes) = index_elems {
-                    self.test(&nodes)?;
-                }
-
-                if let Some(node) = where_clause {
-                    self.test(&[&**node])?;
-                }
+                self.test(index_elems)?;
+                self.test(where_clause.as_deref())?;
             }
         }
 
@@ -383,43 +324,33 @@ impl Guard {
             ..
         } = statement;
 
-        if let Some(nodes) = using_clause {
-            self.test(&nodes)?;
-        }
+        self.test(using_clause)?;
+        self.test(where_clause.as_deref())?;
+        self.test(returning_list)?;
 
-        if let Some(node) = where_clause {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = returning_list {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = with_clause.as_ref().and_then(|with| with.ctes.as_ref()) {
-            self.test(&nodes)?;
+        if let Some(with_clause) = with_clause {
+            self.test(&with_clause.ctes)?;
         }
 
         Ok(())
     }
 
-    fn test_a_expr(&self, a_expr: &A_Expr) -> Result<(), Error> {
-        let A_Expr {
+    fn test_a_expr(&self, a_expr: &AExpr) -> Result<(), Error> {
+        let AExpr {
             name, lexpr, rexpr, ..
         } = a_expr;
 
-        if let Some(nodes) = name {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = lexpr {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(node) = rexpr {
-            self.test(&[&**node])?;
-        }
+        self.test(name)?;
+        self.test(lexpr.as_deref())?;
+        self.test(rexpr.as_deref())?;
 
         Ok(())
+    }
+
+    fn test_a_array_expr(&self, a_array_expr: &AArrayExpr) -> Result<(), Error> {
+        let AArrayExpr { elements, .. } = a_array_expr;
+
+        self.test(elements)
     }
 
     fn test_cte(&self, cte: &CommonTableExpr) -> Result<(), Error> {
@@ -433,29 +364,12 @@ impl Guard {
             ..
         } = cte;
 
-        if let Some(nodes) = aliascolnames {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = ctequery {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = ctecolnames {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = ctecoltypes {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = ctecoltypmods {
-            self.test(&nodes)?;
-        }
-
-        if let Some(nodes) = ctecolcollations {
-            self.test(&nodes)?;
-        }
+        self.test(aliascolnames)?;
+        self.test(ctequery.as_deref())?;
+        self.test(ctecolnames)?;
+        self.test(ctecoltypes)?;
+        self.test(ctecoltypmods)?;
+        self.test(ctecolcollations)?;
 
         Ok(())
     }
@@ -465,13 +379,8 @@ impl Guard {
             indirection, val, ..
         } = target;
 
-        if let Some(nodes) = indirection {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = val {
-            self.test(&[&**node])?;
-        }
+        self.test(indirection)?;
+        self.test(val.as_deref())?;
 
         Ok(())
     }
@@ -479,23 +388,14 @@ impl Guard {
     fn test_list(&self, list: &List) -> Result<(), Error> {
         let List { items } = list;
 
-        if let Some(nodes) = items {
-            self.test(&nodes)?;
-        }
-
-        Ok(())
+        self.test(items)
     }
 
     fn test_case_when(&self, case_when: &CaseWhen) -> Result<(), Error> {
         let CaseWhen { expr, result, .. } = case_when;
 
-        if let Some(node) = expr {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(node) = result {
-            self.test(&[&**node])?;
-        }
+        self.test(expr.as_deref())?;
+        self.test(result.as_deref())?;
 
         Ok(())
     }
@@ -508,17 +408,9 @@ impl Guard {
             ..
         } = case_expr;
 
-        if let Some(node) = arg {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = args {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = defresult {
-            self.test(&[&**node])?;
-        }
+        self.test(arg.as_deref())?;
+        self.test(args)?;
+        self.test(defresult.as_deref())?;
 
         Ok(())
     }
@@ -533,236 +425,233 @@ impl Guard {
             ..
         } = join_expr;
 
-        if let Some(node) = larg {
-            self.test(&[&**node])?;
-        }
+        self.test(larg.as_deref())?;
+        self.test(rarg.as_deref())?;
+        self.test(using_clause)?;
+        self.test(quals.as_deref())?;
 
-        if let Some(node) = rarg {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = using_clause {
-            self.test(&nodes)?;
-        }
-
-        if let Some(node) = quals {
-            self.test(&[&**node])?;
-        }
-
-        if let Some(nodes) = alias.as_ref().and_then(|alias| alias.colnames.as_ref()) {
-            self.test(&nodes)?;
+        if let Some(alias) = alias {
+            self.test(&alias.colnames)?;
         }
 
         Ok(())
     }
 
-    fn test<N>(&self, nodes: &[N]) -> Result<(), Error>
+    fn test<I, N>(&self, nodes: I) -> Result<(), Error>
     where
-        N: std::borrow::Borrow<Node> + fmt::Debug,
+        N: std::borrow::Borrow<Node>,
+        I: IntoIterator<Item = N>,
     {
         for node in nodes {
-            match node.borrow() {
-                Node::SelectStmt(select_statement) => {
-                    let command = Command::Select;
+            if let Some(node) = &node.borrow().node {
+                match node {
+                    node::Node::SelectStmt(select_statement) => {
+                        let command = Command::Select;
 
-                    if !self.allowed_statements.contains(&command) {
-                        return Err(Error::StatementNotAllowed(command.to_string()));
+                        if !self.allowed_statements.contains(&command) {
+                            return Err(Error::StatementNotAllowed(command.to_string()));
+                        }
+
+                        self.test_select(select_statement)?;
                     }
+                    node::Node::UpdateStmt(update_statement) => {
+                        let command = Command::Update;
 
-                    self.test_select(select_statement)?;
-                }
-                Node::UpdateStmt(update_statement) => {
-                    let command = Command::Update;
+                        if !self.allowed_statements.contains(&command) {
+                            return Err(Error::StatementNotAllowed(command.to_string()));
+                        }
 
-                    if !self.allowed_statements.contains(&command) {
-                        return Err(Error::StatementNotAllowed(command.to_string()));
+                        self.test_update(update_statement)?;
                     }
+                    node::Node::InsertStmt(insert_statement) => {
+                        let command = Command::Insert;
 
-                    self.test_update(update_statement)?;
-                }
-                Node::InsertStmt(insert_statement) => {
-                    let command = Command::Insert;
+                        if !self.allowed_statements.contains(&command) {
+                            return Err(Error::StatementNotAllowed(command.to_string()));
+                        }
 
-                    if !self.allowed_statements.contains(&command) {
-                        return Err(Error::StatementNotAllowed(command.to_string()));
+                        self.test_insert(insert_statement)?;
                     }
+                    node::Node::DeleteStmt(delete_statement) => {
+                        let command = Command::Delete;
 
-                    self.test_insert(insert_statement)?;
-                }
-                Node::DeleteStmt(delete_statement) => {
-                    let command = Command::Delete;
+                        if !self.allowed_statements.contains(&command) {
+                            return Err(Error::StatementNotAllowed(command.to_string()));
+                        }
 
-                    if !self.allowed_statements.contains(&command) {
-                        return Err(Error::StatementNotAllowed(command.to_string()));
+                        self.test_delete(delete_statement)?;
                     }
-
-                    self.test_delete(delete_statement)?;
-                }
-                Node::A_Expr(a_expr) => {
-                    self.test_a_expr(a_expr)?;
-                }
-                Node::CommonTableExpr(common_table_expression) => {
-                    self.test_cte(common_table_expression)?;
-                }
-                Node::ResTarget(res_target) => {
-                    self.test_res_target(res_target)?;
-                }
-                Node::List(list) => {
-                    self.test_list(list)?;
-                }
-                Node::CaseWhen(case_when) => {
-                    self.test_case_when(case_when)?;
-                }
-                Node::CaseExpr(case_expr) => {
-                    self.test_case_expr(case_expr)?;
-                }
-                Node::JoinExpr(join_expr) => {
-                    self.test_join_expr(join_expr)?;
-                }
-                // reject privileged statements and commands out-of-hand
-                Node::AlterCollationStmt(..)
-                | Node::AlterDatabaseSetStmt(..)
-                | Node::AlterDatabaseStmt(..)
-                | Node::AlterDefaultPrivilegesStmt(..)
-                | Node::AlterDomainStmt(..)
-                | Node::AlterEnumStmt(..)
-                | Node::AlterEventTrigStmt(..)
-                | Node::AlterExtensionContentsStmt(..)
-                | Node::AlterExtensionStmt(..)
-                | Node::AlterFdwStmt(..)
-                | Node::AlterForeignServerStmt(..)
-                | Node::AlterFunctionStmt(..)
-                | Node::AlterObjectDependsStmt(..)
-                | Node::AlterObjectSchemaStmt(..)
-                | Node::AlterOpFamilyStmt(..)
-                | Node::AlterOperatorStmt(..)
-                | Node::AlterOwnerStmt(..)
-                | Node::AlterPolicyStmt(..)
-                | Node::AlterPublicationStmt(..)
-                | Node::AlterRoleSetStmt(..)
-                | Node::AlterRoleStmt(..)
-                | Node::AlterSeqStmt(..)
-                | Node::AlterStatsStmt(..)
-                | Node::AlterSubscriptionStmt(..)
-                | Node::AlterSystemStmt(..)
-                | Node::AlterTSConfigurationStmt(..)
-                | Node::AlterTSDictionaryStmt(..)
-                | Node::AlterTableCmd(..)
-                | Node::AlterTableMoveAllStmt(..)
-                | Node::AlterTableSpaceOptionsStmt(..)
-                | Node::AlterTableStmt(..)
-                | Node::AlterTypeStmt(..)
-                | Node::AlterUserMappingStmt(..)
-                | Node::CheckPointStmt(..)
-                | Node::ClosePortalStmt(..)
-                | Node::ClusterStmt(..)
-                | Node::CommentStmt(..)
-                | Node::CopyStmt(..)
-                | Node::CreateAmStmt(..)
-                | Node::CreateCastStmt(..)
-                | Node::CreateConversionStmt(..)
-                | Node::CreateDomainStmt(..)
-                | Node::CreateEnumStmt(..)
-                | Node::CreateEventTrigStmt(..)
-                | Node::CreateExtensionStmt(..)
-                | Node::CreateFdwStmt(..)
-                | Node::CreateForeignServerStmt(..)
-                | Node::CreateForeignTableStmt(..)
-                | Node::CreateFunctionStmt(..)
-                | Node::CreateOpClassItem(..)
-                | Node::CreateOpClassStmt(..)
-                | Node::CreateOpFamilyStmt(..)
-                | Node::CreatePLangStmt(..)
-                | Node::CreatePolicyStmt(..)
-                | Node::CreatePublicationStmt(..)
-                | Node::CreateRangeStmt(..)
-                | Node::CreateRoleStmt(..)
-                | Node::CreateSchemaStmt(..)
-                | Node::CreateSeqStmt(..)
-                | Node::CreateStatsStmt(..)
-                | Node::CreateStmt(..)
-                | Node::CreateSubscriptionStmt(..)
-                | Node::CreateTableAsStmt(..)
-                | Node::CreateTableSpaceStmt(..)
-                | Node::CreateTransformStmt(..)
-                | Node::CreateTrigStmt(..)
-                | Node::CreateUserMappingStmt(..)
-                | Node::CreatedbStmt(..)
-                | Node::DeallocateStmt(..)
-                | Node::DeclareCursorStmt(..)
-                | Node::DefElem(..)
-                | Node::DefineStmt(..)
-                | Node::DiscardStmt(..)
-                | Node::DoStmt(..)
-                | Node::DropOwnedStmt(..)
-                | Node::DropRoleStmt(..)
-                | Node::DropStmt(..)
-                | Node::DropSubscriptionStmt(..)
-                | Node::DropTableSpaceStmt(..)
-                | Node::DropUserMappingStmt(..)
-                | Node::DropdbStmt(..)
-                | Node::ExecuteStmt(..)
-                | Node::ExplainStmt(..)
-                | Node::FetchStmt(..)
-                | Node::GrantRoleStmt(..)
-                | Node::GrantStmt(..)
-                | Node::ImportForeignSchemaStmt(..)
-                | Node::ListenStmt(..)
-                | Node::LoadStmt(..)
-                | Node::LockStmt(..)
-                | Node::NotifyStmt(..)
-                | Node::PartitionCmd(..)
-                | Node::PartitionElem(..)
-                | Node::PartitionRangeDatum(..)
-                | Node::PartitionSpec(..)
-                | Node::PrepareStmt(..)
-                | Node::RawStmt(..)
-                | Node::ReassignOwnedStmt(..)
-                | Node::RefreshMatViewStmt(..)
-                | Node::ReindexStmt(..)
-                | Node::RenameStmt(..)
-                | Node::ReplicaIdentityStmt(..)
-                | Node::RoleSpec(..)
-                | Node::TransactionStmt(..)
-                | Node::TriggerTransition(..)
-                | Node::UnlistenStmt(..)
-                | Node::VacuumRelation(..)
-                | Node::VacuumStmt(..)
-                | Node::VariableSetStmt(..)
-                | Node::VariableShowStmt(..)
-                | Node::ViewStmt(..)
-                | Node::XmlSerialize(..) => {
-                    tracing::warn!(node = ?&node, "rejected query due to presence of banned node");
-
-                    match self.allowed_statements {
-                        AllowedStatements::All => (),
-                        AllowedStatements::List(..) => return Err(Error::QueryRejected),
+                    node::Node::AExpr(a_expr) => {
+                        self.test_a_expr(a_expr)?;
                     }
-                }
-                Node::FuncCall(FuncCall { funcname, .. }) => match &self.allowed_functions {
-                    AllowedFunctions::All => (),
-                    AllowedFunctions::List(functions) => {
-                        // ban unnamed functions outright
-                        let name = funcname
-                            .as_ref()
-                            .ok_or(Error::QueryRejected)?
-                            .first()
-                            .ok_or(Error::QueryRejected)?;
+                    node::Node::AArrayExpr(a_array_expr) => {
+                        self.test_a_array_expr(a_array_expr)?;
+                    }
+                    node::Node::CommonTableExpr(common_table_expression) => {
+                        self.test_cte(common_table_expression)?;
+                    }
+                    node::Node::ResTarget(res_target) => {
+                        self.test_res_target(res_target)?;
+                    }
+                    node::Node::List(list) => {
+                        self.test_list(list)?;
+                    }
+                    node::Node::CaseWhen(case_when) => {
+                        self.test_case_when(case_when)?;
+                    }
+                    node::Node::CaseExpr(case_expr) => {
+                        self.test_case_expr(case_expr)?;
+                    }
+                    node::Node::JoinExpr(join_expr) => {
+                        self.test_join_expr(join_expr)?;
+                    }
+                    // reject privileged statements and commands out-of-hand
+                    node::Node::AlterCollationStmt(..)
+                    | node::Node::AlterDatabaseSetStmt(..)
+                    | node::Node::AlterDatabaseStmt(..)
+                    | node::Node::AlterDefaultPrivilegesStmt(..)
+                    | node::Node::AlterDomainStmt(..)
+                    | node::Node::AlterEnumStmt(..)
+                    | node::Node::AlterEventTrigStmt(..)
+                    | node::Node::AlterExtensionContentsStmt(..)
+                    | node::Node::AlterExtensionStmt(..)
+                    | node::Node::AlterFdwStmt(..)
+                    | node::Node::AlterForeignServerStmt(..)
+                    | node::Node::AlterFunctionStmt(..)
+                    | node::Node::AlterObjectDependsStmt(..)
+                    | node::Node::AlterObjectSchemaStmt(..)
+                    | node::Node::AlterOpFamilyStmt(..)
+                    | node::Node::AlterOperatorStmt(..)
+                    | node::Node::AlterOwnerStmt(..)
+                    | node::Node::AlterPolicyStmt(..)
+                    | node::Node::AlterPublicationStmt(..)
+                    | node::Node::AlterRoleSetStmt(..)
+                    | node::Node::AlterRoleStmt(..)
+                    | node::Node::AlterSeqStmt(..)
+                    | node::Node::AlterStatsStmt(..)
+                    | node::Node::AlterSubscriptionStmt(..)
+                    | node::Node::AlterSystemStmt(..)
+                    | node::Node::AlterTableCmd(..)
+                    | node::Node::AlterTableMoveAllStmt(..)
+                    | node::Node::AlterTableSpaceOptionsStmt(..)
+                    | node::Node::AlterTableStmt(..)
+                    | node::Node::AlterTypeStmt(..)
+                    | node::Node::AlterUserMappingStmt(..)
+                    | node::Node::CheckPointStmt(..)
+                    | node::Node::ClosePortalStmt(..)
+                    | node::Node::ClusterStmt(..)
+                    | node::Node::CommentStmt(..)
+                    | node::Node::CopyStmt(..)
+                    | node::Node::CreateAmStmt(..)
+                    | node::Node::CreateCastStmt(..)
+                    | node::Node::CreateConversionStmt(..)
+                    | node::Node::CreateDomainStmt(..)
+                    | node::Node::CreateEnumStmt(..)
+                    | node::Node::CreateEventTrigStmt(..)
+                    | node::Node::CreateExtensionStmt(..)
+                    | node::Node::CreateFdwStmt(..)
+                    | node::Node::CreateForeignServerStmt(..)
+                    | node::Node::CreateForeignTableStmt(..)
+                    | node::Node::CreateFunctionStmt(..)
+                    | node::Node::CreateOpClassItem(..)
+                    | node::Node::CreateOpClassStmt(..)
+                    | node::Node::CreateOpFamilyStmt(..)
+                    | node::Node::CreatePolicyStmt(..)
+                    | node::Node::CreatePublicationStmt(..)
+                    | node::Node::CreateRangeStmt(..)
+                    | node::Node::CreateRoleStmt(..)
+                    | node::Node::CreateSchemaStmt(..)
+                    | node::Node::CreateSeqStmt(..)
+                    | node::Node::CreateStatsStmt(..)
+                    | node::Node::CreateStmt(..)
+                    | node::Node::CreateSubscriptionStmt(..)
+                    | node::Node::CreateTableAsStmt(..)
+                    | node::Node::CreateTableSpaceStmt(..)
+                    | node::Node::CreateTransformStmt(..)
+                    | node::Node::CreateTrigStmt(..)
+                    | node::Node::CreateUserMappingStmt(..)
+                    | node::Node::CreatedbStmt(..)
+                    | node::Node::DeallocateStmt(..)
+                    | node::Node::DeclareCursorStmt(..)
+                    | node::Node::DefElem(..)
+                    | node::Node::DefineStmt(..)
+                    | node::Node::DiscardStmt(..)
+                    | node::Node::DoStmt(..)
+                    | node::Node::DropOwnedStmt(..)
+                    | node::Node::DropRoleStmt(..)
+                    | node::Node::DropStmt(..)
+                    | node::Node::DropSubscriptionStmt(..)
+                    | node::Node::DropTableSpaceStmt(..)
+                    | node::Node::DropUserMappingStmt(..)
+                    | node::Node::DropdbStmt(..)
+                    | node::Node::ExecuteStmt(..)
+                    | node::Node::ExplainStmt(..)
+                    | node::Node::FetchStmt(..)
+                    | node::Node::GrantRoleStmt(..)
+                    | node::Node::GrantStmt(..)
+                    | node::Node::ImportForeignSchemaStmt(..)
+                    | node::Node::ListenStmt(..)
+                    | node::Node::LoadStmt(..)
+                    | node::Node::LockStmt(..)
+                    | node::Node::NotifyStmt(..)
+                    | node::Node::PartitionCmd(..)
+                    | node::Node::PartitionElem(..)
+                    | node::Node::PartitionRangeDatum(..)
+                    | node::Node::PartitionSpec(..)
+                    | node::Node::PrepareStmt(..)
+                    | node::Node::RawStmt(..)
+                    | node::Node::ReassignOwnedStmt(..)
+                    | node::Node::RefreshMatViewStmt(..)
+                    | node::Node::ReindexStmt(..)
+                    | node::Node::RenameStmt(..)
+                    | node::Node::ReplicaIdentityStmt(..)
+                    | node::Node::RoleSpec(..)
+                    | node::Node::TransactionStmt(..)
+                    | node::Node::TriggerTransition(..)
+                    | node::Node::UnlistenStmt(..)
+                    | node::Node::VacuumRelation(..)
+                    | node::Node::VacuumStmt(..)
+                    | node::Node::VariableSetStmt(..)
+                    | node::Node::VariableShowStmt(..)
+                    | node::Node::ViewStmt(..)
+                    | node::Node::XmlSerialize(..) => {
+                        tracing::warn!(node = ?&node, "rejected query due to presence of banned node");
 
-                        match name {
-                            Node::String { value: Some(name) } => {
-                                // check the function name against the list
-                                if !functions.contains(name) {
-                                    return Err(Error::FunctionNotAllowed(name.to_string()));
-                                }
-                            }
-                            // reject function names that aren't strings
-                            _ => return Err(Error::QueryRejected),
+                        match self.allowed_statements {
+                            AllowedStatements::All => (),
+                            AllowedStatements::List(..) => return Err(Error::QueryRejected),
                         }
                     }
-                },
-                node => {
-                    tracing::debug!(node = ?&node, "Skipping node");
+                    node::Node::FuncCall(function_call) => {
+                        let funcname = &function_call.funcname;
+
+                        match &self.allowed_functions {
+                            AllowedFunctions::All => (),
+                            AllowedFunctions::List(functions) => {
+                                // ban unnamed functions outright
+                                let name =
+                                    funcname.first().ok_or(Error::QueryRejected)?.node.as_ref();
+
+                                match name {
+                                    Some(node::Node::String(pg_query_rust::String {
+                                        str: name,
+                                    })) => {
+                                        // check the function name against the list
+                                        if !functions.contains(name) {
+                                            return Err(Error::FunctionNotAllowed(
+                                                name.to_string(),
+                                            ));
+                                        }
+                                    }
+                                    // reject function names that aren't strings
+                                    _ => return Err(Error::QueryRejected),
+                                }
+                            }
+                        }
+                    }
+                    node => {
+                        tracing::debug!(node = ?&node, "Skipping node");
+                    }
                 }
             }
         }
