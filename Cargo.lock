@@ -710,6 +710,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libpgquery-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a2d95146fc4e5b9ccac1dc4ea64153805614b572a9f60c44155e13e03b3b228"
+dependencies = [
+ "bindgen",
+ "prost 0.9.0",
+ "prost-build 0.9.0",
+ "thiserror",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -963,19 +975,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg_query_rust"
-version = "0.1.0"
-source = "git+https://github.com/NAlexPear/pg_query_rust.git?rev=db7aaf6#db7aaf6e6141c40756cc88f0358a6f0a290ad484"
-dependencies = [
- "bindgen",
- "bytes",
- "prost 0.9.0",
- "prost-build 0.9.0",
- "prost-types 0.9.0",
- "thiserror",
-]
-
-[[package]]
 name = "phf"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1159,8 +1158,8 @@ name = "postguard"
 version = "0.1.0"
 dependencies = [
  "Inflector",
+ "libpgquery-sys",
  "once_cell",
- "pg_query_rust",
  "serde",
  "serde_json",
  "thiserror",

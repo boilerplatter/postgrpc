@@ -1,15 +1,28 @@
-/*!
-Test Postgres-compatible statements against a set of CORS-like rules.
+# Postguard
+[![Latest Version](https://img.shields.io/crates/v/postguard.svg)](https://crates.io/crates/postguard)
+[![Documentation](https://docs.rs/postguard/badge.svg)](https://docs.rs/postguard)
+[![Crates.io](https://img.shields.io/crates/l/postguard)](LICENSE)
+
+Test Postgres-compatible statements against a set of CORS-like rules
 
 ## Why
 
 Postgres has a rich `ROLE` system for managing privileges around data in a database.
 But those privileges are often too permissive by default, and are difficult to restrict with by statement or function name.
 
-[`postguard`](#) provides a [`Guard`] statement analyzer for protecting databases from malicious or invalid queries.
-This [`Guard`] can be used in any Rust application that has access to statements (perhaps from untrusted sources) before they are run.
-Under the hood, [`postguard`](#) uses the [`libpg_query`](https://github.com/pganalyze/libpg_query) library to parse queries down to a syntax tree
+`postguard` provides a `Guard` statement analyzer for protecting databases from malicious or invalid queries.
+This `Guard` can be used in any Rust application that has access to statements (perhaps from untrusted sources) before they are run.
+Under the hood, `postguard` uses the [`libpg_query`](https://github.com/pganalyze/libpg_query) library to parse queries down to a syntax tree
 before checking the entire tree for disallowed nodes.
+
+## Installation
+
+Add `postguard` to your `Cargo.toml`: 
+
+```toml
+[dependencies]
+postguard = "0.1"
+```
 
 ## Usage
 
@@ -72,13 +85,3 @@ fn it_restricts_functions() {
         .expect("allowed functions are permitted");
 }
 ```
-*/
-#![deny(missing_docs, unreachable_pub)]
-
-mod error;
-mod guard;
-#[cfg(test)]
-mod test;
-
-pub use error::*;
-pub use guard::*;

@@ -3,21 +3,25 @@ name = "postguard"
 version = "0.1.0"
 edition = "2018"
 description = "Test Postgres-compatible statements against a set of CORS-like rules"
+license = "MIT"
+readme = "README.md"
+keywords = ["postgres", "sql"]
+documentation = "https://docs.rs/postguard"
+
+[badges.maintenance]
+status = "actively-developed"
 
 [dependencies]
 Inflector = "0.11.4"
-thiserror = "1.0.29"
-tracing = "0.1.26"
-
-[dependencies.pg_query_rust]
-git = "https://github.com/NAlexPear/pg_query_rust.git"
-rev = "db7aaf6"
+libpgquery-sys = "0.1.0"
+thiserror = "1.0.30"
+tracing = "0.1.29"
 
 [dev-dependencies]
-once_cell = "*"
-serde_json = "*"
-tracing-test = "*"
+once_cell = "1.8.0"
+serde_json = "1.0.68"
+tracing-test = "0.1.0"
 
 [dev-dependencies.serde]
 features = ["derive"]
-version = "*"
+version = "1.0.130"
