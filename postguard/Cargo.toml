@@ -1,7 +1,7 @@
 [package]
 name = "postguard"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 description = "Test Postgres-compatible statements against a set of CORS-like rules"
 license = "MIT"
 readme = "README.md"
