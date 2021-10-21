@@ -8,7 +8,7 @@ Test Postgres-compatible statements against a set of CORS-like rules
 ## Why
 
 Postgres has a rich `ROLE` system for managing privileges around data in a database.
-But those privileges are often too permissive by default, and are difficult to restrict with by statement or function name.
+But those privileges are often too permissive by default, and are difficult to restrict by statement or function name.
 
 `postguard` provides a `Guard` statement analyzer for protecting databases from malicious or invalid queries.
 This `Guard` can be used in any Rust application that has access to statements (perhaps from untrusted sources) before they are run.
