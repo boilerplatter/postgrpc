@@ -7,4 +7,5 @@ members = [
   "postgres-pool",
   "postgrpc",
   "postguard",
+  "postrust"
 ]

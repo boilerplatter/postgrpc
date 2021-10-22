@@ -1168,6 +1168,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "postrust"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "envy",
+ "fallible-iterator",
+ "futures-core",
+ "futures-util",
+ "memchr",
+ "postgres-protocol",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
