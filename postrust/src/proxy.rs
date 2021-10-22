@@ -1,16 +1,18 @@
-use crate::frontend::{Handshake, Message};
-use bytes::BytesMut;
+use crate::frontend::{Handshake, HandshakeCodec, Message, MessageCodec};
+use bytes::{BufMut, Bytes, BytesMut};
+use futures_core::Stream;
+use futures_util::{FutureExt, Sink, SinkExt, StreamExt, TryStreamExt};
+use postguard::{AllowedFunctions, AllowedStatements, Command, Guard};
 use serde::Deserialize;
 use std::{
-    io,
+    fmt::{self, Display},
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    pin::Pin,
+    task::{Context, Poll},
 };
 use thiserror::Error;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    task::JoinError,
-};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::codec::{Encoder, Framed};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -21,8 +23,8 @@ pub enum Error {
         address: SocketAddr,
         source: std::io::Error,
     },
-    #[error("Error parsing message: {0}")]
-    Parse(std::io::Error),
+    #[error("Invalid credentials")]
+    InvalidCredentials,
     #[error("Error reading next message: {0}")]
     Read(std::io::Error),
     #[error("Error writing next message: {0}")]
@@ -80,144 +82,329 @@ impl Proxy {
     pub async fn serve(self) -> Result<(), Error> {
         let address = SocketAddr::new(self.configuration.host, self.configuration.port);
 
-        let listener = TcpListener::bind(&address)
-            .await
-            .map_err(|source| Error::Listen { address, source })?;
-
         tracing::info!("Listening on {address}", address = &address);
 
-        let connection = Connection::new(&listener);
+        TcpListener::bind(&address)
+            .await
+            .map(Connections::from)
+            .map_err(|source| Error::Listen { address, source })?
+            .for_each_concurrent(None, |connection| async move {
+                match connection {
+                    Ok(mut connection) => {
+                        // generate shared password salt 
+                         let password_salt = [b'a', b'b', 3, b'z']; // FIXME: generate anew for each conn
 
-        loop {
-            connection.listen().await?;
+                        // set up shared credentials for future requests
+                        let mut credentials = Credentials::build();
+
+                        // handle the handshake lifecycle
+                        while let Some(message) = connection.try_next().await? {
+                            match message {
+                                Handshake::SslRequest => {
+                                    tracing::debug!(connection = %connection, "SSLRequest heard during handshake");
+
+                                    connection.send(BytesMut::from("N")).await.map_err(Error::Write)?;
+                                },
+                                Handshake::Startup { version, user, mut options } => {
+                                    tracing::debug!(
+                                        version = %version,
+                                        user = ?user,
+                                        options = ?options,
+                                        "Startup initiated"
+                                    );
+
+                                    // write the AuthenticationMd5Password message
+                                    let mut message = BytesMut::new();
+                                    message.put_u8(b'R');
+                                    message.put_i32(12);
+                                    message.put_i32(5);
+                                    message.put_slice(&password_salt);
+
+                                    connection
+                                        .send(message)
+                                        .await
+                                        .map_err(Error::Write)?;
+
+                                    // store the previous credentials
+                                    credentials.user(user);
+
+                                    if let Some(database) = options.remove("database".as_bytes()) {
+                                        credentials.database(database);
+                                    }
+
+                                    // break out of this part of the stream
+                                    break;
+                                }
+                            }
+                        }
+
+                        // convert the connection to a message stream
+                        let mut connection = Connection::<MessageCodec>::from(connection);
+
+                        // validate the provided credentials with the next message
+                        if let Some(Message::PasswordMessage(message)) = connection.try_next().await? {
+                            let password = message.password(password_salt);
+
+                            // TODO:
+                            // run the auth query/request/what-have-you
+
+                            // return the AuthenticationOk message
+                            let mut authentication_ok_message = BytesMut::new();
+                            authentication_ok_message.put_u8(b'R');
+                            authentication_ok_message.put_i32(8);
+                            authentication_ok_message.put_i32(0);
+                            connection.send(authentication_ok_message).await.map_err(Error::Write)?;
+
+                            // TODO:
+                            // send some backend parameters back to the client
+
+                            // return the ReadyForQuery message
+                            let mut ready_for_query_message = BytesMut::new();
+                            ready_for_query_message.put_u8(b'Z');
+                            ready_for_query_message.put_i32(5);
+                            ready_for_query_message.put_u8(b'I');
+                            connection.send(ready_for_query_message).await.map_err(Error::Write)?;
+
+                            // add the password to the credentials
+                            credentials.password(password);
+                        }
+
+                        let credentials = credentials.build()?;
+
+                        tracing::debug!(credentials = ?&credentials, "Connection authenticated");
+
+                        // set up guards from credentials based on auth response
+                        let statement_guard = Guard::new(
+                            AllowedStatements::List(vec![Command::Select]),
+                            AllowedFunctions::List(vec![]),
+                        );
+
+
+                        // handle subsequent messages after the handshake has been completed
+                        while let Some(message) = connection.try_next().await? {
+                            match message {
+                                Message::Parse(body) => {
+                                    tracing::info!(body = ?body, "Parse message received")
+                                },
+                                Message::Query(body) => {
+                                    tracing::info!(body = ?body, "Query message received");
+
+                                    // FIXME: let guard take bytes, too!
+                                    let statement =
+                                        unsafe { String::from_utf8_unchecked(body.query().to_vec()) };
+
+                                    if let Err(error) = statement_guard.guard(&statement) {
+                                        tracing::warn!(reason = %error, "Statement rejected");
+                                    }
+                                }
+                                _ => tracing::info!("Other message received")
+                            }
+                        }
+
+                            // TODO:
+                            // use the auth response to key into the right connection
+                            // (from the pool, of course)
+                            // guard statements in parse and query messages
+                    }
+                    Err(error) => tracing::error!(error = %error, "Error establishing Connection"),
+                }
+
+                Ok::<_, Error>(())
+            }.then(|result| async move {
+                if let Err(error) = result {
+                    tracing::error!(error = %error, "Closing Connection with error");
+                }
+            }))
+            .await;
+
+        Ok(())
+    }
+}
+
+// TODO (refactoring):
+// TcpListener should be represented as a stream of Connections
+// Connections should yield a Connection, which is a stream of framed messages
+// parameterized over different Codecs in a typestate-style lifecycle
+
+/// Stream of new TCP connections from a listener
+struct Connections {
+    listener: TcpListener,
+}
+
+impl From<TcpListener> for Connections {
+    fn from(listener: TcpListener) -> Self {
+        Self { listener }
+    }
+}
+
+impl Stream for Connections {
+    type Item = Result<Connection<HandshakeCodec>, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.listener.poll_accept(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(Error::Accept(error)))),
+            Poll::Ready(Ok((socket, remote_peer))) => {
+                let connection = Connection::new(socket, HandshakeCodec, remote_peer);
+
+                tracing::debug!(remote_peer = %remote_peer, "Connection accepted");
+
+                Poll::Ready(Some(Ok(connection)))
+            }
         }
     }
 }
 
-struct Connection<'a> {
-    listener: &'a TcpListener,
+pin_project_lite::pin_project! {
+    /// Connection stream that returns frames from a TcpStream, parameterized by Codec
+    struct Connection<C> {
+        remote_peer: SocketAddr,
+        #[pin]
+        frames: Framed<TcpStream, C>,
+    }
 }
 
-impl<'a> Connection<'a> {
-    fn new(listener: &'a TcpListener) -> Self {
-        Self { listener }
+impl<C> Connection<C> {
+    fn new(socket: TcpStream, codec: C, remote_peer: SocketAddr) -> Self {
+        Self {
+            frames: Framed::new(socket, codec),
+            remote_peer,
+        }
+    }
+}
+
+impl<C> Display for Connection<C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.remote_peer.fmt(formatter)
+    }
+}
+
+impl From<Connection<HandshakeCodec>> for Connection<MessageCodec> {
+    fn from(previous: Connection<HandshakeCodec>) -> Self {
+        let socket = previous.frames.into_inner();
+
+        Self {
+            remote_peer: previous.remote_peer,
+            frames: Framed::new(socket, MessageCodec),
+        }
+    }
+}
+
+impl Stream for Connection<HandshakeCodec> {
+    type Item = Result<Handshake, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut projection = self.project();
+
+        match projection.frames.poll_next_unpin(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
+            Poll::Ready(Some(Ok(mut frame))) => {
+                let handshake = Handshake::parse(&mut frame)
+                    .map_err(Error::Read)
+                    .transpose();
+
+                Poll::Ready(handshake)
+            }
+        }
+    }
+}
+
+impl Stream for Connection<MessageCodec> {
+    type Item = Result<Message, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut projection = self.project();
+
+        match projection.frames.poll_next_unpin(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
+            Poll::Ready(Some(Ok(mut frame))) => {
+                let handshake = Message::parse(&mut frame).map_err(Error::Read).transpose();
+
+                Poll::Ready(handshake)
+            }
+        }
+    }
+}
+
+impl<C, I> Sink<I> for Connection<C>
+where
+    C: Encoder<I>,
+{
+    type Error = C::Error;
+
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        self.project().frames.poll_ready(context)
     }
 
-    // FIXME: turn entire connection into a stream that wraps TcpStream
-    async fn listen(&self) -> Result<(), Error> {
-        let (mut socket, remote_peer) = self.listener.accept().await.map_err(Error::Accept)?;
+    fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
+        self.project().frames.start_send(item)
+    }
 
-        tracing::debug!(remote_peer = %remote_peer, "Connection accepted");
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        self.project().frames.poll_flush(context)
+    }
 
-        // spawn the real work off on the executor
-        let connection = tokio::spawn(async move {
-            let mut frontend_handshake = Handshake::Pending;
+    fn poll_close(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
+        self.project().frames.poll_close(context)
+    }
+}
 
-            loop {
-                socket.readable().await.map_err(Error::Read)?;
+/// Database connection credentials from the connection string
+#[derive(Debug)]
+struct Credentials {
+    user: Bytes,
+    database: Bytes,
+    password: Bytes,
+}
 
-                let mut socket_buffer = [0; 1028];
-                let mut message_buffer = BytesMut::new();
+impl Credentials {
+    fn build() -> CredentialsBuilder {
+        CredentialsBuilder::default()
+    }
+}
 
-                match socket.read(&mut socket_buffer).await {
-                    Ok(0) => {
-                        tracing::debug!(remote_peer = %remote_peer, "Connection closing");
+#[derive(Default)]
+struct CredentialsBuilder {
+    user: Option<Bytes>,
+    database: Option<Bytes>,
+    password: Option<Bytes>,
+}
 
-                        break;
-                    }
-                    Ok(..) => {
-                        // dump the socket buffer into the message buffer
-                        message_buffer.extend_from_slice(&socket_buffer);
+impl CredentialsBuilder {
+    fn user(&mut self, user: Bytes) {
+        self.user = Some(user);
+    }
 
-                        // progress through the handshake state machine
-                        match frontend_handshake {
-                            Handshake::Complete => {
-                                // TODO:
-                                // use the auth response to key into the right connection
-                                // (from the pool, of course)
-                                // guard statements in parse and query messages
-                            }
-                            Handshake::Pending | Handshake::SslRequest => {
-                                match Handshake::parse(&mut message_buffer).map_err(Error::Parse)? {
-                                    Some(Handshake::SslRequest) => {
-                                        tracing::debug!("SSLRequest heard during handshake");
-                                        socket.write_u8(b'N').await.map_err(Error::Write)?;
-                                        frontend_handshake = Handshake::SslRequest;
-                                    }
-                                    Some(Handshake::Startup {
-                                        password_salt,
-                                        user,
-                                        options,
-                                        version,
-                                    }) => {
-                                        tracing::debug!(
-                                            version = %version,
-                                            user = ?user,
-                                            options = ?options,
-                                            "Startup initiated"
-                                        );
+    fn database(&mut self, database: Bytes) {
+        self.database = Some(database);
+    }
 
-                                        // write the AuthenticationMd5Password message
-                                        socket.write_u8(b'R').await.map_err(Error::Write)?;
-                                        socket.write_i32(12).await.map_err(Error::Write)?;
-                                        socket.write_i32(5).await.map_err(Error::Write)?;
+    fn password(&mut self, password: Bytes) {
+        self.password = Some(password);
+    }
 
-                                        socket
-                                            .write_all(&password_salt)
-                                            .await
-                                            .map_err(Error::Write)?;
+    fn build(self) -> Result<Credentials, Error> {
+        let user = self.user.ok_or(Error::InvalidCredentials)?;
+        let password = self.password.ok_or(Error::InvalidCredentials)?;
+        let database = self.database.unwrap_or_else(|| user.to_owned());
 
-                                        frontend_handshake = Handshake::Startup {
-                                            password_salt,
-                                            user,
-                                            options,
-                                            version,
-                                        };
-                                    }
-                                    _ => (),
-                                }
-                            }
-                            Handshake::Startup { password_salt, .. } => {
-                                if let Some(Message::PasswordMessage(message)) =
-                                    Message::parse(&mut message_buffer).map_err(Error::Parse)?
-                                {
-                                    let _password = message.password(password_salt);
-
-                                    // TODO:
-                                    // run the auth query/request/what-have-you
-
-                                    tracing::debug!("Connection authenticated");
-
-                                    // return the AuthenticationOk message
-                                    socket.write_u8(b'R').await.map_err(Error::Write)?;
-                                    socket.write_i32(8).await.map_err(Error::Write)?;
-                                    socket.write_i32(0).await.map_err(Error::Write)?;
-
-                                    // TODO:
-                                    // frame all additional messages
-
-                                    frontend_handshake = Handshake::Complete;
-                                }
-                            }
-                        }
-                    }
-                    Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => (),
-                    Err(error) => return Err(Error::Read(error)),
-                }
-            }
-
-            Ok(())
-        });
-
-        // spawn logging of errors on the executor
-        tokio::spawn(async move {
-            if let Err(error) = connection.await? {
-                tracing::error!(error = ?error, remote_peer = %remote_peer, "Connection dropped")
-            }
-
-            Ok::<_, JoinError>(())
-        });
-
-        Ok(())
+        Ok(Credentials {
+            user,
+            password,
+            database,
+        })
     }
 }

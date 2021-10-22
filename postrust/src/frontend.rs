@@ -1,7 +1,7 @@
 #![allow(clippy::enum_variant_names)]
 
 // TODO: contribute this work to postgres_protocol
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 use memchr::memchr;
 use std::{
@@ -9,7 +9,7 @@ use std::{
     collections::BTreeMap,
     io::{self, Read},
 };
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio_util::codec::{Decoder, Encoder};
 
 /// Byte tags for each frontend message variant
 const BIND_TAG: u8 = b'B';
@@ -27,127 +27,153 @@ const QUERY_TAG: u8 = b'Q';
 const SYNC_TAG: u8 = b'S';
 const TERMINATE_TAG: u8 = b'X';
 
-// /// Frontend message iterator over a TCP frame
-// pub struct Messages(BytesMut);
+/// Codec for decoding frontend messages from TCP streams
+pub struct MessageCodec;
 
-// impl FallibleIterator for Messages {
-//     type Item = Message;
-//     type Error = io::Error;
+// FIXME: implement Encoder for frontend and backend messages
+impl Encoder<BytesMut> for MessageCodec {
+    type Error = io::Error;
 
-//     fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-//         Message::parse(&mut self.0)
-//     }
-// }
+    fn encode(&mut self, item: BytesMut, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        dst.extend_from_slice(&item);
 
-// /// Codec for decoding frontend messages from TCP streams
-// pub struct Codec;
+        Ok(())
+    }
+}
 
-// impl Decoder for Codec {
-//     type Item = Messages;
-//     type Error = io::Error;
+impl Decoder for MessageCodec {
+    type Item = BytesMut;
+    type Error = io::Error;
 
-//     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-//         let mut idx = 0;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let mut idx = 0;
 
-//         // read until the next header
-//         while let Some(header) = Header::parse(&src[idx..])? {
-//             let len = header.len() as usize + 1;
+        // read until the next header
+        while let Some(header) = Header::parse(&src[idx..])? {
+            let len = header.len() as usize + 1;
 
-//             if src[idx..].len() < len {
-//                 break;
-//             }
+            if src[idx..].len() < len {
+                break;
+            }
 
-//             idx += len
-//         }
+            idx += len
+        }
 
-//         if idx == 0 {
-//             Ok(None)
-//         } else {
-//             Ok(Some(Messages(src.split_to(idx))))
-//         }
-//     }
-// }
+        if idx == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(src.split_to(idx)))
+        }
+    }
+}
 
-// /// Postgres message prefix of a message tag and content length
-// pub struct Header {
-//     len: i32,
-// }
+/// Postgres message prefix of a message tag and content length
+pub struct Header {
+    len: i32,
+}
 
-// #[allow(clippy::len_without_is_empty)]
-// impl Header {
-//     #[inline]
-//     pub fn parse(buf: &[u8]) -> io::Result<Option<Header>> {
-//         if buf.len() < 5 {
-//             return Ok(None);
-//         }
+#[allow(clippy::len_without_is_empty)]
+impl Header {
+    #[inline]
+    pub fn parse(buf: &[u8]) -> io::Result<Option<Header>> {
+        if buf.len() < 5 {
+            return Ok(None);
+        }
 
-//         let _tag = buf[0];
-//         let len = BigEndian::read_i32(&buf[1..]);
+        let _tag = buf[0];
+        let len = BigEndian::read_i32(&buf[1..]);
 
-//         if len < 4 {
-//             return Err(io::Error::new(
-//                 io::ErrorKind::InvalidData,
-//                 "invalid message length: header length < 4",
-//             ));
-//         }
+        if len < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid message length: header length < 4",
+            ));
+        }
 
-//         Ok(Some(Header { len }))
-//     }
+        Ok(Some(Header { len }))
+    }
 
-//     #[inline]
-//     pub fn len(self) -> i32 {
-//         self.len
-//     }
-// }
+    #[inline]
+    pub fn len(self) -> i32 {
+        self.len
+    }
+}
+
+// TODO: reorganize and get better names
+pub struct HandshakeCodec;
+
+// FIXME: encode _backend_ messages here instead of bare bytes
+impl Encoder<BytesMut> for HandshakeCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: BytesMut, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        dst.extend_from_slice(&item);
+
+        Ok(())
+    }
+}
+
+impl Decoder for HandshakeCodec {
+    type Item = BytesMut;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        tracing::debug!(src = ?&src, "Decoding startup frame");
+
+        // wait for at least enough data to determine message length
+        if src.len() < 4 {
+            let to_read = 4 - src.len();
+            src.reserve(to_read);
+            return Ok(None);
+        }
+
+        // get the length from the message itself
+        let len = (&src[..4]).read_u32::<BigEndian>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: reading u32",
+            )
+        })? as usize;
+
+        // check that we have the entire message to parse
+        if src.len() < len {
+            let to_read = len - src.len();
+            src.reserve(to_read);
+            return Ok(None);
+        };
+
+        let frame = src.split_to(len);
+
+        // send the frame along
+        Ok(Some(frame))
+    }
+}
 
 /// Connection handshake's frontend process as an ordered enum
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Handshake {
-    Pending,
     SslRequest,
     Startup {
         version: i32,
         user: Bytes,
         options: BTreeMap<Bytes, Bytes>,
-        password_salt: [u8; 4],
     },
-    Complete,
 }
 
 impl Handshake {
+    /// Parse a single frame of known and established length
     #[inline]
     pub fn parse(buf: &mut BytesMut) -> io::Result<Option<Self>> {
-        // wait for at least enough data to determine message length
-        if buf.len() < 4 {
-            let to_read = 4 - buf.len();
-            buf.reserve(to_read);
-            return Ok(None);
-        }
-
-        // get the length from the message itself
-        let len = (&buf[..4]).read_u32::<BigEndian>().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid message format: reading u32",
-            )
-        })?;
+        let len = buf.len() as usize;
 
         // length of 8 is a special case where SslRequest is sent first
         if len == 8 {
             return Ok(Some(Self::SslRequest));
         }
 
-        // check that we have the entire message to parse
-        let total_len = len as usize + 1;
-        if buf.len() < total_len {
-            let to_read = total_len - buf.len();
-            buf.reserve(to_read);
-            return Ok(None);
-        };
-
         // parse the rest of the message
         let mut buf = Buffer {
-            bytes: buf.split_to(total_len).freeze(),
+            bytes: buf.split_to(len).freeze(),
             idx: 4,
         };
 
@@ -181,7 +207,6 @@ impl Handshake {
             user,
             version,
             options,
-            password_salt: [b'a', b'b', 3, b'z'], // FIXME
         }))
     }
 }
@@ -347,6 +372,7 @@ pub struct FunctionCallBody {
     storage: Bytes,
 }
 
+#[derive(Debug)]
 pub struct ParseBody {
     name: Bytes,
     query: Bytes,
@@ -358,13 +384,23 @@ pub struct PasswordMessageBody {
 }
 
 impl PasswordMessageBody {
-    pub fn password(self, salt: [u8; 4]) -> String {
-        String::from("FIXME")
+    pub fn password(self, salt: [u8; 4]) -> Bytes {
+        // FIXME:
+        // use md5 to check/decode? or re-hash with different salt?
+        self.password.slice(..)
     }
 }
 
+#[derive(Debug)]
 pub struct QueryBody {
     query: Bytes,
+}
+
+impl QueryBody {
+    #[inline]
+    pub fn query(&self) -> Bytes {
+        self.query.slice(..)
+    }
 }
 
 /// Buffer wrapper type from postgres-protocol
