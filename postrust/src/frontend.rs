@@ -1,7 +1,7 @@
 #![allow(clippy::enum_variant_names)]
 
 // TODO: contribute this work to postgres_protocol
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 use memchr::memchr;
 use std::{
@@ -11,21 +11,9 @@ use std::{
 };
 use tokio_util::codec::{Decoder, Encoder};
 
-/// Byte tags for each frontend message variant
-const BIND_TAG: u8 = b'B';
-const CLOSE_TAG: u8 = b'C';
-const COPY_DATA_TAG: u8 = b'd';
-const COPY_DONE_TAG: u8 = b'c';
-const COPY_FAIL_TAG: u8 = b'f';
-const DESCRIBE_TAG: u8 = b'D';
-const EXECUTE_TAG: u8 = b'E';
-const FLUSH_TAG: u8 = b'H';
-const FUNCTION_CALL_TAG: u8 = b'F';
-const PARSE_TAG: u8 = b'P';
+/// Byte tags for relevant frontend message variants
 const PASSWORD_MESSAGE_TAG: u8 = b'p';
 const QUERY_TAG: u8 = b'Q';
-const SYNC_TAG: u8 = b'S';
-const TERMINATE_TAG: u8 = b'X';
 
 /// Codec for decoding frontend messages from TCP streams
 pub struct MessageCodec;
@@ -46,56 +34,35 @@ impl Decoder for MessageCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let mut idx = 0;
+        tracing::debug!(src = ?&src, "Decoding message frame");
 
-        // read until the next header
-        while let Some(header) = Header::parse(&src[idx..])? {
-            let len = header.len() as usize + 1;
-
-            if src[idx..].len() < len {
-                break;
-            }
-
-            idx += len
-        }
-
-        if idx == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(src.split_to(idx)))
-        }
-    }
-}
-
-/// Postgres message prefix of a message tag and content length
-pub struct Header {
-    len: i32,
-}
-
-#[allow(clippy::len_without_is_empty)]
-impl Header {
-    #[inline]
-    pub fn parse(buf: &[u8]) -> io::Result<Option<Header>> {
-        if buf.len() < 5 {
+        // wait for at least enough data to determine message length
+        if src.len() < 5 {
+            let to_read = 5 - src.len();
+            src.reserve(to_read);
             return Ok(None);
         }
 
-        let _tag = buf[0];
-        let len = BigEndian::read_i32(&buf[1..]);
+        // get the length from the message itself
+        let len = (&src[1..5]).read_u32::<BigEndian>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: reading u32",
+            )
+        })? as usize;
 
-        if len < 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid message length: header length < 4",
-            ));
+        // check that we have the entire message to parse
+        let total_len = len + 1;
+        if src.len() < total_len {
+            let to_read = total_len - src.len();
+            src.reserve(to_read);
+            return Ok(None);
         }
 
-        Ok(Some(Header { len }))
-    }
+        let frame = src.split_to(total_len);
 
-    #[inline]
-    pub fn len(self) -> i32 {
-        self.len
+        // send the frame along
+        Ok(Some(frame))
     }
 }
 
@@ -161,7 +128,7 @@ pub enum Handshake {
 }
 
 impl Handshake {
-    /// Parse a single frame of known and established length
+    /// Parse a single startup frame of known and established length
     #[inline]
     pub fn parse(buf: &mut BytesMut) -> io::Result<Option<Self>> {
         let len = buf.len() as usize;
@@ -211,35 +178,21 @@ impl Handshake {
     }
 }
 
-/// In-session Postgres frontend message variants
-#[non_exhaustive]
+/// In-session Postgres frontend message variants that Postrust cares about
+// FIXME: pare this list down to relevant messages plus a catchall message for forwarding
 pub enum Message {
-    Bind(BindBody),
-    CancelRequest,
-    Close(CloseBody),
-    CopyData(CopyDataBody),
-    CopyDone,
-    CopyFail(CopyFailBody),
-    Describe(DescribeBody),
-    Execute(ExecuteBody),
-    Flush,
-    FunctionCall(FunctionCallBody),
-    Parse(ParseBody),
     PasswordMessage(PasswordMessageBody),
     Query(QueryBody),
-    Sync,
-    Terminate,
+    // catchall for frames we don't care about
+    // TODO: audit other message types for ill intent
+    // especially from programmatic clients
+    Forward(Bytes),
 }
 
 impl Message {
+    /// Parse a single message frame of known and established length
     #[inline]
     pub fn parse(buf: &mut BytesMut) -> io::Result<Option<Message>> {
-        if buf.len() < 5 {
-            let to_read = 5 - buf.len();
-            buf.reserve(to_read);
-            return Ok(None);
-        }
-
         let tag = buf[0];
         let len = (&buf[1..5]).read_u32::<BigEndian>().map_err(|_| {
             io::Error::new(
@@ -249,11 +202,6 @@ impl Message {
         })?;
 
         let total_len = len as usize + 1;
-        if buf.len() < total_len {
-            let to_read = total_len - buf.len();
-            buf.reserve(to_read);
-            return Ok(None);
-        }
 
         let mut buf = Buffer {
             bytes: buf.split_to(total_len).freeze(),
@@ -261,63 +209,6 @@ impl Message {
         };
 
         let message = match tag {
-            BIND_TAG => {
-                let portal = buf.read_cstr()?;
-                let source = buf.read_cstr()?;
-                let storage = buf.read_all();
-                Message::Bind(BindBody {
-                    portal,
-                    source,
-                    storage,
-                })
-            }
-            CLOSE_TAG => {
-                let target = buf.read_u8()?;
-                let name = buf.read_cstr()?;
-
-                Message::Close(CloseBody { target, name })
-            }
-            COPY_DATA_TAG => {
-                let storage = buf.read_all();
-
-                Message::CopyData(CopyDataBody { storage })
-            }
-            COPY_DONE_TAG => Message::CopyDone,
-            COPY_FAIL_TAG => {
-                let message = buf.read_cstr()?;
-
-                Message::CopyFail(CopyFailBody { message })
-            }
-            DESCRIBE_TAG => {
-                let target = buf.read_u8()?;
-                let name = buf.read_cstr()?;
-
-                Message::Describe(DescribeBody { target, name })
-            }
-            EXECUTE_TAG => {
-                let name = buf.read_cstr()?;
-                let max_rows = buf.read_i32::<BigEndian>()?;
-
-                Message::Execute(ExecuteBody { name, max_rows })
-            }
-            FLUSH_TAG => Message::Flush,
-            FUNCTION_CALL_TAG => {
-                let oid = buf.read_i32::<BigEndian>()?;
-                let storage = buf.read_all();
-
-                Message::FunctionCall(FunctionCallBody { oid, storage })
-            }
-            PARSE_TAG => {
-                let name = buf.read_cstr()?;
-                let query = buf.read_cstr()?;
-                let storage = buf.read_all();
-
-                Message::Parse(ParseBody {
-                    name,
-                    query,
-                    storage,
-                })
-            }
             PASSWORD_MESSAGE_TAG => {
                 let password = buf.read_cstr()?;
 
@@ -328,9 +219,7 @@ impl Message {
 
                 Message::Query(QueryBody { query })
             }
-            SYNC_TAG => Message::Sync,
-            TERMINATE_TAG => Message::Terminate,
-            _ => return Ok(None),
+            _ => Message::Forward(buf.bytes),
         };
 
         Ok(Some(message))
@@ -338,40 +227,6 @@ impl Message {
 }
 
 /// Body types for messages with payloads
-pub struct BindBody {
-    portal: Bytes,
-    source: Bytes,
-    storage: Bytes,
-}
-
-pub struct CloseBody {
-    target: u8,
-    name: Bytes,
-}
-
-pub struct CopyDataBody {
-    storage: Bytes,
-}
-
-pub struct CopyFailBody {
-    message: Bytes,
-}
-
-pub struct DescribeBody {
-    target: u8,
-    name: Bytes,
-}
-
-pub struct ExecuteBody {
-    name: Bytes,
-    max_rows: i32,
-}
-
-pub struct FunctionCallBody {
-    oid: i32,
-    storage: Bytes,
-}
-
 #[derive(Debug)]
 pub struct ParseBody {
     name: Bytes,
@@ -384,7 +239,7 @@ pub struct PasswordMessageBody {
 }
 
 impl PasswordMessageBody {
-    pub fn password(self, salt: [u8; 4]) -> Bytes {
+    pub fn password(self, _salt: [u8; 4]) -> Bytes {
         // FIXME:
         // use md5 to check/decode? or re-hash with different salt?
         self.password.slice(..)
@@ -436,13 +291,6 @@ impl Buffer {
                 "unexpected EOF",
             )),
         }
-    }
-
-    #[inline]
-    fn read_all(&mut self) -> Bytes {
-        let buf = self.bytes.slice(self.idx..);
-        self.idx = self.bytes.len();
-        buf
     }
 }
 

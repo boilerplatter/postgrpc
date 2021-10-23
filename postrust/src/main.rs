@@ -2,7 +2,6 @@ use proxy::{Configuration, Proxy};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
-mod backend;
 mod frontend;
 mod proxy;
 

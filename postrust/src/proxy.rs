@@ -179,13 +179,9 @@ impl Proxy {
                             AllowedFunctions::List(vec![]),
                         );
 
-
                         // handle subsequent messages after the handshake has been completed
                         while let Some(message) = connection.try_next().await? {
                             match message {
-                                Message::Parse(body) => {
-                                    tracing::info!(body = ?body, "Parse message received")
-                                },
                                 Message::Query(body) => {
                                     tracing::info!(body = ?body, "Query message received");
 
@@ -195,16 +191,51 @@ impl Proxy {
 
                                     if let Err(error) = statement_guard.guard(&statement) {
                                         tracing::warn!(reason = %error, "Statement rejected");
+
+                                        // send back an error response
+                                        let mut fields = BytesMut::new();
+                                        fields.put_u8(b'S');
+                                        fields.put_slice(b"ERROR");
+                                        fields.put_u8(0);
+                                        fields.put_u8(b'C');
+                                        fields.put_slice(b"42501");
+                                        fields.put_u8(0);
+                                        fields.put_u8(b'M');
+                                        fields.put_slice(error.to_string().as_bytes());
+                                        fields.put_u8(0);
+                                        fields.put_u8(0);
+                                        let fields_length = fields.len() as i32;
+
+                                        let mut error_response_message = BytesMut::new();
+                                        error_response_message.put_u8(b'E');
+                                        error_response_message.put_i32(fields_length + 4);
+                                        error_response_message.put_slice(&fields);
+
+                                        connection.send(error_response_message).await.map_err(Error::Write)?;
+
+                                        // return the ReadyForQuery message
+                                        let mut ready_for_query_message = BytesMut::new();
+                                        ready_for_query_message.put_u8(b'Z');
+                                        ready_for_query_message.put_i32(5);
+                                        ready_for_query_message.put_u8(b'I');
+                                        connection.send(ready_for_query_message).await.map_err(Error::Write)?;
                                     }
+
+                                    // TODO: otherwise, reconstruct the original message and
+                                    // forward it upstream
                                 }
-                                _ => tracing::info!("Other message received")
+                                Message::Forward(_frame) => {
+                                    // TODO: pipe this frame directly to an upstream
+                                    // postgres connection
+                                }
+                                Message::PasswordMessage(..) => tracing::warn!("PasswordMessage received outside of a handshake")
                             }
                         }
 
-                            // TODO:
-                            // use the auth response to key into the right connection
-                            // (from the pool, of course)
-                            // guard statements in parse and query messages
+                        // TODO:
+                        // use the auth response to key into the right connection
+                        // (from the pool, of course)
+                        // guard statements in parse and query messages
                     }
                     Err(error) => tracing::error!(error = %error, "Error establishing Connection"),
                 }
