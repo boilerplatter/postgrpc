@@ -3,6 +3,7 @@ use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
 mod connections;
+mod credentials;
 mod protocol;
 mod proxy;
 
@@ -26,11 +27,12 @@ async fn run_service() -> Result<(), Error> {
     let proxy = Proxy::new(configuration);
 
     // handle SIGTERM-based termination gracefully
-    // TODO: wait for active queries to complete
     let mut termination = signal(SignalKind::terminate())?;
 
     let shutdown = async move {
         termination.recv().await;
+
+        // TODO: wait for active queries to complete
 
         tracing::info!("SIGTERM heard in Postrust proxy");
     };

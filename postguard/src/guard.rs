@@ -140,7 +140,7 @@ impl Default for AllowedFunctions {
 }
 
 /// CORS-like statement analyzer for guarding queryable methods
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Guard {
     allowed_statements: AllowedStatements,
     allowed_functions: AllowedFunctions,

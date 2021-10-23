@@ -75,6 +75,12 @@ impl<C> Display for Connection<C> {
     }
 }
 
+impl<C> fmt::Debug for Connection<C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, formatter)
+    }
+}
+
 impl From<Connection<startup::Codec>> for Connection<frontend::Codec> {
     fn from(previous: Connection<startup::Codec>) -> Self {
         let socket = previous.frames.into_inner();
