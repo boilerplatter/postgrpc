@@ -1,23 +1,19 @@
-use crate::frontend::{Handshake, HandshakeCodec, Message, MessageCodec};
-use bytes::{BufMut, Bytes, BytesMut};
-use futures_core::Stream;
-use futures_util::{FutureExt, Sink, SinkExt, StreamExt, TryStreamExt};
+use crate::{
+    connections::{self, Connection, Connections},
+    protocol::{backend, frontend, startup},
+};
+use bytes::Bytes;
+use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
 use postguard::{AllowedFunctions, AllowedStatements, Command, Guard};
 use serde::Deserialize;
-use std::{
-    fmt::{self, Display},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use thiserror::Error;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::{Encoder, Framed};
+use tokio::net::TcpListener;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Error accepting connection: {0}")]
-    Accept(std::io::Error),
+    #[error(transparent)]
+    Connection(#[from] connections::Error),
     #[error("Error listening at {address}: {source}")]
     Listen {
         address: SocketAddr,
@@ -25,10 +21,6 @@ pub enum Error {
     },
     #[error("Invalid credentials")]
     InvalidCredentials,
-    #[error("Error reading next message: {0}")]
-    Read(std::io::Error),
-    #[error("Error writing next message: {0}")]
-    Write(std::io::Error),
 }
 
 /// Proxy configuration
@@ -100,12 +92,12 @@ impl Proxy {
                         // handle the handshake lifecycle
                         while let Some(message) = connection.try_next().await? {
                             match message {
-                                Handshake::SslRequest => {
+                                startup::Message::SslRequest => {
                                     tracing::debug!(connection = %connection, "SSLRequest heard during handshake");
 
-                                    connection.send(BytesMut::from("N")).await.map_err(Error::Write)?;
+                                    connection.send(backend::Message::SslResponse).await?;
                                 },
-                                Handshake::Startup { version, user, mut options } => {
+                                startup::Message::Startup { version, user, mut options } => {
                                     tracing::debug!(
                                         version = %version,
                                         user = ?user,
@@ -113,17 +105,10 @@ impl Proxy {
                                         "Startup initiated"
                                     );
 
-                                    // write the AuthenticationMd5Password message
-                                    let mut message = BytesMut::new();
-                                    message.put_u8(b'R');
-                                    message.put_i32(12);
-                                    message.put_i32(5);
-                                    message.put_slice(&password_salt);
-
+                                    // send the AuthenticationMd5Password message
                                     connection
-                                        .send(message)
-                                        .await
-                                        .map_err(Error::Write)?;
+                                        .send(backend::Message::AuthenticationMd5Password { salt: password_salt })
+                                        .await?;
 
                                     // store the previous credentials
                                     credentials.user(user);
@@ -139,31 +124,25 @@ impl Proxy {
                         }
 
                         // convert the connection to a message stream
-                        let mut connection = Connection::<MessageCodec>::from(connection);
+                        let mut connection = Connection::<frontend::Codec>::from(connection);
 
                         // validate the provided credentials with the next message
-                        if let Some(Message::PasswordMessage(message)) = connection.try_next().await? {
+                        if let Some(frontend::Message::PasswordMessage(message)) = connection.try_next().await? {
                             let password = message.password(password_salt);
 
                             // TODO:
                             // run the auth query/request/what-have-you
 
                             // return the AuthenticationOk message
-                            let mut authentication_ok_message = BytesMut::new();
-                            authentication_ok_message.put_u8(b'R');
-                            authentication_ok_message.put_i32(8);
-                            authentication_ok_message.put_i32(0);
-                            connection.send(authentication_ok_message).await.map_err(Error::Write)?;
+                            connection.send(backend::Message::AuthenticationOk).await?;
 
                             // TODO:
                             // send some backend parameters back to the client
 
                             // return the ReadyForQuery message
-                            let mut ready_for_query_message = BytesMut::new();
-                            ready_for_query_message.put_u8(b'Z');
-                            ready_for_query_message.put_i32(5);
-                            ready_for_query_message.put_u8(b'I');
-                            connection.send(ready_for_query_message).await.map_err(Error::Write)?;
+                            connection.send(backend::Message::ReadyForQuery {
+                                transaction_status: backend::TransactionStatus::Idle
+                            }).await?;
 
                             // add the password to the credentials
                             credentials.password(password);
@@ -182,7 +161,7 @@ impl Proxy {
                         // handle subsequent messages after the handshake has been completed
                         while let Some(message) = connection.try_next().await? {
                             match message {
-                                Message::Query(body) => {
+                                frontend::Message::Query(body) => {
                                     tracing::info!(body = ?body, "Query message received");
 
                                     // FIXME: let guard take bytes, too!
@@ -193,42 +172,26 @@ impl Proxy {
                                         tracing::warn!(reason = %error, "Statement rejected");
 
                                         // send back an error response
-                                        let mut fields = BytesMut::new();
-                                        fields.put_u8(b'S');
-                                        fields.put_slice(b"ERROR");
-                                        fields.put_u8(0);
-                                        fields.put_u8(b'C');
-                                        fields.put_slice(b"42501");
-                                        fields.put_u8(0);
-                                        fields.put_u8(b'M');
-                                        fields.put_slice(error.to_string().as_bytes());
-                                        fields.put_u8(0);
-                                        fields.put_u8(0);
-                                        let fields_length = fields.len() as i32;
-
-                                        let mut error_response_message = BytesMut::new();
-                                        error_response_message.put_u8(b'E');
-                                        error_response_message.put_i32(fields_length + 4);
-                                        error_response_message.put_slice(&fields);
-
-                                        connection.send(error_response_message).await.map_err(Error::Write)?;
+                                        connection.send(backend::Message::ErrorResponse {
+                                            code: 42501,
+                                            message: error.to_string().into(),
+                                            severity: backend::Severity::Error
+                                        }).await?;
 
                                         // return the ReadyForQuery message
-                                        let mut ready_for_query_message = BytesMut::new();
-                                        ready_for_query_message.put_u8(b'Z');
-                                        ready_for_query_message.put_i32(5);
-                                        ready_for_query_message.put_u8(b'I');
-                                        connection.send(ready_for_query_message).await.map_err(Error::Write)?;
+                                        connection.send(backend::Message::ReadyForQuery {
+                                            transaction_status: backend::TransactionStatus::Idle
+                                        }).await?;
                                     }
 
                                     // TODO: otherwise, reconstruct the original message and
                                     // forward it upstream
                                 }
-                                Message::Forward(_frame) => {
+                                frontend::Message::Forward(_frame) => {
                                     // TODO: pipe this frame directly to an upstream
                                     // postgres connection
                                 }
-                                Message::PasswordMessage(..) => tracing::warn!("PasswordMessage received outside of a handshake")
+                                frontend::Message::PasswordMessage(..) => tracing::warn!("PasswordMessage received outside of a handshake")
                             }
                         }
 
@@ -249,147 +212,6 @@ impl Proxy {
             .await;
 
         Ok(())
-    }
-}
-
-// TODO (refactoring):
-// TcpListener should be represented as a stream of Connections
-// Connections should yield a Connection, which is a stream of framed messages
-// parameterized over different Codecs in a typestate-style lifecycle
-
-/// Stream of new TCP connections from a listener
-struct Connections {
-    listener: TcpListener,
-}
-
-impl From<TcpListener> for Connections {
-    fn from(listener: TcpListener) -> Self {
-        Self { listener }
-    }
-}
-
-impl Stream for Connections {
-    type Item = Result<Connection<HandshakeCodec>, Error>;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.listener.poll_accept(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(Error::Accept(error)))),
-            Poll::Ready(Ok((socket, remote_peer))) => {
-                let connection = Connection::new(socket, HandshakeCodec, remote_peer);
-
-                tracing::debug!(remote_peer = %remote_peer, "Connection accepted");
-
-                Poll::Ready(Some(Ok(connection)))
-            }
-        }
-    }
-}
-
-pin_project_lite::pin_project! {
-    /// Connection stream that returns frames from a TcpStream, parameterized by Codec
-    struct Connection<C> {
-        remote_peer: SocketAddr,
-        #[pin]
-        frames: Framed<TcpStream, C>,
-    }
-}
-
-impl<C> Connection<C> {
-    fn new(socket: TcpStream, codec: C, remote_peer: SocketAddr) -> Self {
-        Self {
-            frames: Framed::new(socket, codec),
-            remote_peer,
-        }
-    }
-}
-
-impl<C> Display for Connection<C> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.remote_peer.fmt(formatter)
-    }
-}
-
-impl From<Connection<HandshakeCodec>> for Connection<MessageCodec> {
-    fn from(previous: Connection<HandshakeCodec>) -> Self {
-        let socket = previous.frames.into_inner();
-
-        Self {
-            remote_peer: previous.remote_peer,
-            frames: Framed::new(socket, MessageCodec),
-        }
-    }
-}
-
-impl Stream for Connection<HandshakeCodec> {
-    type Item = Result<Handshake, Error>;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut projection = self.project();
-
-        match projection.frames.poll_next_unpin(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
-            Poll::Ready(Some(Ok(mut frame))) => {
-                let handshake = Handshake::parse(&mut frame)
-                    .map_err(Error::Read)
-                    .transpose();
-
-                Poll::Ready(handshake)
-            }
-        }
-    }
-}
-
-impl Stream for Connection<MessageCodec> {
-    type Item = Result<Message, Error>;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut projection = self.project();
-
-        match projection.frames.poll_next_unpin(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
-            Poll::Ready(Some(Ok(mut frame))) => {
-                let handshake = Message::parse(&mut frame).map_err(Error::Read).transpose();
-
-                Poll::Ready(handshake)
-            }
-        }
-    }
-}
-
-impl<C, I> Sink<I> for Connection<C>
-where
-    C: Encoder<I>,
-{
-    type Error = C::Error;
-
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.project().frames.poll_ready(context)
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: I) -> Result<(), Self::Error> {
-        self.project().frames.start_send(item)
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.project().frames.poll_flush(context)
-    }
-
-    fn poll_close(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.project().frames.poll_close(context)
     }
 }
 

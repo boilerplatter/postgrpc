@@ -12,15 +12,16 @@ envy = "0.4.2"
 bytes = "1.1.0"
 byteorder = "1.4.3"
 memchr = "2.4.1"
-postgres-protocol = "0.6.2"
 futures-core = "0.3.17"
-fallible-iterator = "0.2.0"
-postguard = { version = "0.1.0", path = "../postguard" }
 pin-project-lite = "0.2.7"
  
 [dependencies.futures-util]
 features = ["sink"]
 version= "0.3.17"
+
+[dependencies.postguard]
+path = "../postguard"
+version = "0.1.0"
 
 [dependencies.serde]
 features = ["derive"]
