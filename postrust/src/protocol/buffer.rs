@@ -39,6 +39,13 @@ impl Buffer {
             )),
         }
     }
+
+    #[inline]
+    pub fn read_all(&mut self) -> Bytes {
+        let buf = self.bytes.slice(self.idx..);
+        self.idx = self.bytes.len();
+        buf
+    }
 }
 
 impl Read for Buffer {

@@ -1,4 +1,4 @@
-use crate::protocol::{frontend, startup};
+use crate::protocol::{backend, frontend, startup};
 use futures_core::Stream;
 use futures_util::{Sink, StreamExt};
 use std::{
@@ -61,11 +61,17 @@ pin_project_lite::pin_project! {
 }
 
 impl<C> Connection<C> {
-    fn new(socket: TcpStream, codec: C, remote_peer: SocketAddr) -> Self {
+    /// Create a new framed connection from a codec
+    pub fn new(socket: TcpStream, codec: C, remote_peer: SocketAddr) -> Self {
         Self {
             frames: Framed::new(socket, codec),
             remote_peer,
         }
+    }
+
+    /// Get the peer address of this connection
+    pub fn peer(&self) -> SocketAddr {
+        self.remote_peer
     }
 }
 
@@ -88,6 +94,17 @@ impl From<Connection<startup::Codec>> for Connection<frontend::Codec> {
         Self {
             remote_peer: previous.remote_peer,
             frames: Framed::new(socket, frontend::Codec),
+        }
+    }
+}
+
+impl From<Connection<startup::Codec>> for Connection<backend::Codec> {
+    fn from(previous: Connection<startup::Codec>) -> Self {
+        let socket = previous.frames.into_inner();
+
+        Self {
+            remote_peer: previous.remote_peer,
+            frames: Framed::new(socket, backend::Codec),
         }
     }
 }
@@ -125,6 +142,27 @@ impl Stream for Connection<frontend::Codec> {
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
             Poll::Ready(Some(Ok(mut frame))) => {
                 let handshake = frontend::Message::parse(&mut frame)
+                    .map_err(Error::Read)
+                    .transpose();
+
+                Poll::Ready(handshake)
+            }
+        }
+    }
+}
+
+impl Stream for Connection<backend::Codec> {
+    type Item = Result<backend::Message, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut projection = self.project();
+
+        match projection.frames.poll_next_unpin(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Error::Read(error)))),
+            Poll::Ready(Some(Ok(mut frame))) => {
+                let handshake = backend::Message::parse(&mut frame)
                     .map_err(Error::Read)
                     .transpose();
 

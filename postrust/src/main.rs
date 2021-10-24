@@ -1,7 +1,9 @@
-use proxy::{Configuration, Proxy};
+use configuration::Configuration;
+use proxy::Proxy;
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
+mod configuration;
 mod connections;
 mod credentials;
 mod protocol;
@@ -23,8 +25,8 @@ async fn run_service() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
 
     // generate a proxy with configuration from the environment
-    let configuration: Configuration = envy::from_env()?;
-    let proxy = Proxy::new(configuration);
+    let configuration = Configuration::from_env()?;
+    let proxy = Proxy::from(&configuration);
 
     // handle SIGTERM-based termination gracefully
     let mut termination = signal(SignalKind::terminate())?;

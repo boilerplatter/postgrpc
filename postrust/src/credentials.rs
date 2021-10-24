@@ -8,9 +8,9 @@ pub struct Error;
 /// Database connection credentials from the connection string
 #[derive(Debug)]
 pub struct Credentials {
-    user: Bytes,
-    database: Bytes,
-    password: Bytes,
+    pub user: Bytes,
+    pub database: Bytes,
+    pub password: Bytes,
 }
 
 impl Credentials {

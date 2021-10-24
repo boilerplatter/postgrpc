@@ -1178,6 +1178,7 @@ dependencies = [
  "futures-util",
  "memchr",
  "pin-project-lite",
+ "postgres-protocol",
  "postguard",
  "serde",
  "thiserror",
