@@ -15,6 +15,7 @@ memchr = "2.4.1"
 futures-core = "0.3.17"
 pin-project-lite = "0.2.7"
 postgres-protocol = "0.6.2"
+tokio-stream = "0.1.7"
  
 [dependencies.futures-util]
 features = ["sink"]

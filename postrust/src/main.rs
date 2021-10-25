@@ -3,9 +3,11 @@ use proxy::Proxy;
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
+mod authentication;
 mod configuration;
 mod connections;
 mod credentials;
+mod pool;
 mod protocol;
 mod proxy;
 
