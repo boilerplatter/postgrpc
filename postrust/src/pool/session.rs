@@ -59,11 +59,9 @@ pub struct Leader {
 impl Leader {
     #[tracing::instrument(skip(self))]
     pub async fn send(&self, message: frontend::Message) -> Result<(), Error> {
-        // pick the endpoint with the lowest number of connections
-        // FIXME:
-        // encapsulate all of this leader-picking logic at the cluster level
-        // get rid of all binary heaps
-        let leader = &self.cluster.leaders.peek().ok_or(Error::MissingLeader)?.0;
+        // pick the next endpoint in the round robin endpoint pool
+        // FIXME: encapsulate all of this leader-picking logic at the cluster level
+        let leader = &self.cluster.leaders.next().ok_or(Error::MissingLeader)?;
 
         // get the newly-created or idle connection
         let connections = leader.connections.read().await;
@@ -93,7 +91,6 @@ impl Leader {
             }
         };
 
-        // FIXME: chain this to the end of backend message streams
         // send the skipped ReadyForQuery message
         self.transmitter
             .send(backend::Message::ReadyForQuery {

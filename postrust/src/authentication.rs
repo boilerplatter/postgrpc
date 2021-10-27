@@ -41,7 +41,7 @@ impl Default for ClusterConfiguration {
 
         let statement_guard = Guard::new(
             AllowedStatements::List(vec![Command::Select]),
-            AllowedFunctions::List(vec!["pg_sleep".to_string()]),
+            AllowedFunctions::List(vec!["to_json".to_string(), "pg_sleep".to_string()]),
         );
 
         Self {

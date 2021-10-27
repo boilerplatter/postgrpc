@@ -9,8 +9,6 @@ use crate::{
 use futures_core::Stream;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use std::{
-    cmp::Reverse,
-    collections::BinaryHeap,
     fmt,
     net::{IpAddr, SocketAddr},
     sync::atomic::{AtomicUsize, Ordering},
@@ -119,7 +117,7 @@ impl From<Connection<backend::Codec>> for ProxiedConnection {
     fn from(connection: Connection<backend::Codec>) -> Self {
         let (mut backend_sink, mut backend_stream) = connection.split();
         let (frontend_sink, mut frontend_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let (backend_broadcast, _) = tokio::sync::broadcast::channel(16);
+        let (backend_broadcast, _) = tokio::sync::broadcast::channel(64);
         let backend_broadcast_transmitter = backend_broadcast.clone();
 
         // send messages from the frontend to the backend through the bounded sender
@@ -177,8 +175,6 @@ impl Ord for ProxiedConnection {
 pub struct ProxiedConnections {
     /// Sink-like and Stream-like pairs for each connection
     pub connections: RwLock<Vec<ProxiedConnection>>,
-    /// Count of the active connections for easier sorting
-    active_connections: AtomicUsize, // FIXME: get rid of this in favor of round-robin
     /// Endpoint configuration for spawning new connections
     endpoint: Endpoint,
 }
@@ -189,13 +185,12 @@ impl ProxiedConnections {
     where
         C: IntoIterator<Item = Connection<backend::Codec>>,
     {
-        let connections: Vec<_> = connections
+        let connections = connections
             .into_iter()
             .map(ProxiedConnection::from)
             .collect();
 
         Self {
-            active_connections: AtomicUsize::new(connections.len()),
             connections: RwLock::new(connections),
             endpoint,
         }
@@ -239,9 +234,6 @@ impl ProxiedConnections {
         {
             // store the connection again for later
             self.connections.write().await.push(proxied_connection);
-
-            // FIXME: remove this counter in favor of round-robin load-balancing
-            self.active_connections.fetch_add(1, Ordering::SeqCst);
         }
 
         Ok(backend_messages)
@@ -252,36 +244,30 @@ impl fmt::Debug for ProxiedConnections {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProxiedConnections")
-            .field("active_connections", &self.active_connections)
             .field("endpoint", &self.endpoint)
             .finish()
     }
 }
 
-impl PartialEq for ProxiedConnections {
-    fn eq(&self, other: &Self) -> bool {
-        self.active_connections.load(Ordering::SeqCst)
-            == other.active_connections.load(Ordering::SeqCst)
-    }
+/// Collection of endpoints that cycles endlessly
+pub struct RoundRobinEndpoints {
+    index: AtomicUsize,
+    endpoints: Vec<ProxiedConnections>,
 }
 
-impl Eq for ProxiedConnections {}
+impl RoundRobinEndpoints {
+    /// Create a new round-robin endpoint balancer over proxied connections
+    pub fn new(endpoints: Vec<ProxiedConnections>) -> Self {
+        Self {
+            index: AtomicUsize::new(0),
+            endpoints,
+        }
+    }
 
-impl PartialOrd for ProxiedConnections {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+    /// Iter-like next for selecting the next endpoint in the Round Robin queue
+    pub fn next(&self) -> Option<&ProxiedConnections> {
+        let index = self.index.fetch_add(1, Ordering::Relaxed);
+
+        self.endpoints.get(index % self.endpoints.len())
     }
 }
-
-impl Ord for ProxiedConnections {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.active_connections
-            .load(Ordering::SeqCst)
-            .cmp(&other.active_connections.load(Ordering::SeqCst))
-    }
-}
-
-/// Collection of endpoints load-balanced by number of active connections
-// https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html#min-heap
-// FIXME: remove binary heap in favor of round-robin queue
-pub type Endpoints = BinaryHeap<Reverse<ProxiedConnections>>;

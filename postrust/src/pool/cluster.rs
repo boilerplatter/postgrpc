@@ -1,10 +1,10 @@
-use super::endpoint::{self, Endpoint, Endpoints, ProxiedConnections};
+use super::endpoint::{self, Endpoint, ProxiedConnections, RoundRobinEndpoints};
 use crate::{
     connections::{self, Connection},
     protocol::backend,
 };
 use futures_util::TryStreamExt;
-use std::{cmp::Reverse, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -24,9 +24,9 @@ pub type Clusters = RwLock<HashMap<(Vec<Endpoint>, Vec<Endpoint>), Arc<Cluster>>
 /// Wrapper around the cluster connections for a single auth response
 pub struct Cluster {
     startup_messages: Vec<backend::Message>,
-    pub(super) leaders: Endpoints,
+    pub(super) leaders: RoundRobinEndpoints,
     #[allow(unused)]
-    pub(super) followers: Endpoints,
+    pub(super) followers: RoundRobinEndpoints,
 }
 
 impl Cluster {
@@ -66,17 +66,20 @@ impl Cluster {
             .await?;
 
         // store the endpoints and connections for later use
-        let proxied_leaders = leaders
-            .into_iter()
-            .map(|leader| ProxiedConnections::new(leader, []))
-            .chain(std::iter::once(proxied_leader_connections))
-            .map(Reverse)
-            .collect();
+        let proxied_leaders = RoundRobinEndpoints::new(
+            leaders
+                .into_iter()
+                .map(|leader| ProxiedConnections::new(leader, []))
+                .chain(std::iter::once(proxied_leader_connections))
+                .collect(),
+        );
 
-        let proxied_followers = followers
-            .into_iter()
-            .map(|follower| Reverse(ProxiedConnections::new(follower, [])))
-            .collect();
+        let proxied_followers = RoundRobinEndpoints::new(
+            followers
+                .into_iter()
+                .map(|follower| ProxiedConnections::new(follower, []))
+                .collect(),
+        );
 
         Ok(Self {
             startup_messages,
