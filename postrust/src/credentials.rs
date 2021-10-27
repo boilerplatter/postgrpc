@@ -6,7 +6,7 @@ use thiserror::Error;
 pub struct Error;
 
 /// Database connection credentials from the connection string
-#[derive(Debug)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Credentials {
     pub user: Bytes,
     pub database: Bytes,

@@ -20,14 +20,15 @@ pub enum Error {
 }
 
 // TODO: turn this into a proto for gRPC handlers, too
+// FIXME: move this to a separate cluster module
 /// Response from the auth query (remote or otherwise)
-pub struct AuthenticationResponse {
+pub struct ClusterConfiguration {
     pub leaders: Vec<Endpoint>,
     pub followers: Vec<Endpoint>,
     pub statement_guard: Guard,
 }
 
-impl Default for AuthenticationResponse {
+impl Default for ClusterConfiguration {
     // FIXME: remove this impl
     fn default() -> Self {
         let leader = Endpoint::new(
@@ -40,7 +41,7 @@ impl Default for AuthenticationResponse {
 
         let statement_guard = Guard::new(
             AllowedStatements::List(vec![Command::Select]),
-            AllowedFunctions::List(vec!["pg_catalog".to_string()]),
+            AllowedFunctions::List(vec!["pg_sleep".to_string()]),
         );
 
         Self {

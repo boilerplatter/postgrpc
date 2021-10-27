@@ -15,7 +15,6 @@ memchr = "2.4.1"
 futures-core = "0.3.17"
 pin-project-lite = "0.2.7"
 postgres-protocol = "0.6.2"
-tokio-stream = "0.1.7"
  
 [dependencies.futures-util]
 features = ["sink"]
@@ -34,6 +33,12 @@ default-features = false
 features = ["net", "macros", "rt-multi-thread", "signal", "io-util"]
 version = "1.6.1"
 
+[dependencies.tokio-stream]
+features = ["sync"]
+version = "0.1.7"
+
 [dependencies.tokio-util]
 features = ["codec"]
 version = "0.6.8"
+
+[features]

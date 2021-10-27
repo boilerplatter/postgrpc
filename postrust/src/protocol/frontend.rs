@@ -12,6 +12,7 @@ const PASSWORD_MESSAGE_TAG: u8 = b'p';
 const QUERY_TAG: u8 = b'Q';
 
 /// Post-startup Postgres frontend message variants that Postrust cares about
+#[derive(Debug, Clone)]
 pub enum Message {
     SASLInitialResponse(SASLInitialResponseBody),
     SASLResponse(SASLResponseBody),
@@ -104,24 +105,25 @@ impl Message {
 }
 
 /// Body types for messages with payloads
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SASLInitialResponseBody {
     pub mechanism: Bytes,
     pub initial_response: Bytes,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SASLResponseBody {
     pub data: Bytes,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParseBody {
     name: Bytes,
     query: Bytes,
     storage: Bytes,
 }
 
+#[derive(Debug, Clone)]
 pub struct PasswordMessageBody {
     password: Bytes,
 }
@@ -132,7 +134,7 @@ impl PasswordMessageBody {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct QueryBody {
     query: Bytes,
 }

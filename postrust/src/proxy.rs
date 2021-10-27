@@ -1,6 +1,6 @@
 #![allow(clippy::mutable_key_type)]
 use crate::{
-    authentication::AuthenticationResponse,
+    authentication::ClusterConfiguration,
     configuration::Configuration,
     connections::{self, Connection, Connections},
     credentials::{self, Credentials, CredentialsBuilder},
@@ -8,7 +8,7 @@ use crate::{
     protocol::{backend, frontend, startup},
 };
 use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::net::TcpListener;
 
@@ -42,6 +42,7 @@ impl Proxy {
     #[tracing::instrument(skip(self))]
     pub async fn serve(self) -> Result<(), Error> {
         tracing::info!("Listening on {address}", address = &self.address);
+        let pool = Arc::new(Pool::default());
 
         TcpListener::bind(&self.address)
             .await
@@ -51,6 +52,8 @@ impl Proxy {
                 source,
             })?
             .for_each_concurrent(None, |connection| {
+                let pool = Arc::clone(&pool);
+
                 async move {
                     let mut connection = connection?;
 
@@ -61,11 +64,11 @@ impl Proxy {
                     // handle the password verification and client-side auth phase
                     let mut connection = Connection::<frontend::Codec>::from(connection);
 
-                    let authentication_response =
+                    let cluster_configuration =
                         handle_password(&mut connection, credential_builder).await?;
 
                     // handle subsequent messages through a user's connection pool after startup
-                    handle_proxied_messages(connection, authentication_response).await
+                    handle_proxied_messages(connection, cluster_configuration, pool).await
                 }
                 .then(|result| async move {
                     if let Err(error) = result {
@@ -148,7 +151,7 @@ async fn handle_startup(
 async fn handle_password(
     connection: &mut Connection<frontend::Codec>,
     mut credentials: CredentialsBuilder,
-) -> Result<AuthenticationResponse, Error> {
+) -> Result<ClusterConfiguration, Error> {
     match connection.try_next().await?.ok_or(Error::UnexpectedEof)? {
         frontend::Message::PasswordMessage(message) => {
             let password = message.cleartext_password();
@@ -159,7 +162,7 @@ async fn handle_password(
 
             // get the cluster configuration from the auth query
             // FIXME: run externally/validate
-            match credentials {
+            match &credentials {
                 Credentials {
                     user,
                     database,
@@ -186,40 +189,40 @@ async fn handle_password(
                 }
             }
 
-            // return the AuthenticationOk message
+            // return the pre-query startup messages
             connection.send(backend::Message::AuthenticationOk).await?;
 
-            Ok(AuthenticationResponse::default()) // FIXME: get from auth step instead
+            Ok(ClusterConfiguration::default()) // FIXME: get from auth step instead
         }
         _ => Err(Error::Unauthorized),
     }
 }
 
 /// Handle all future messages that need to be forwarded to upstream connections
-#[tracing::instrument(skip(leaders, followers, statement_guard))]
+#[tracing::instrument(skip(leaders, followers, statement_guard, pool))]
 async fn handle_proxied_messages(
     connection: Connection<frontend::Codec>,
-    AuthenticationResponse {
+    ClusterConfiguration {
         leaders,
         followers,
         statement_guard,
-    }: AuthenticationResponse,
+    }: ClusterConfiguration,
+    pool: Arc<Pool>,
 ) -> Result<(), Error> {
-    // construct a pool for this session
-    // FIXME: share these pools across sessions
-    let mut pool = Pool::connect(leaders, followers).await?;
+    // get the remote address for logging
+    let remote_peer = connection.peer();
 
-    // get leader and follower quasi-sinks for the proxied postgres connection
-    let leader = pool.leader();
+    // get a session and message stream for this cluster configuration
+    let (session, mut session_messages) = pool.get_session(leaders, followers).await?;
 
-    // send messages from the downstream pool back upstream to users
+    // send messages from the downstream session back upstream to users
     let (transmitter, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
-    let upstream_messages_complete = tokio::spawn({
+    tokio::spawn({
         let transmitter = transmitter.clone();
 
         async move {
-            while let Some(message) = pool.next().await {
+            while let Some(message) = session_messages.recv().await {
                 transmitter.send(message).map_err(|_| Error::Sync)?; // FIXME: make this error better
             }
 
@@ -228,8 +231,7 @@ async fn handle_proxied_messages(
     });
 
     // aggregate messages from the pool and this proxy back to the user
-    let remote_peer = connection.peer();
-    let (mut user_connection, user_messages) = connection.split();
+    let (mut user_connection, mut user_messages) = connection.split();
 
     tokio::spawn(async move {
         while let Some(message) = receiver.recv().await {
@@ -240,9 +242,6 @@ async fn handle_proxied_messages(
 
         Ok::<_, Error>(())
     });
-
-    // stop parsing user messages once the user stops sending messages
-    let mut user_messages = user_messages.take_until(upstream_messages_complete);
 
     // handle messages from the user connection stream
     while let Some(message) = user_messages.try_next().await? {
@@ -276,13 +275,21 @@ async fn handle_proxied_messages(
                     Ok(..) => {
                         // FIXME: use leader or follower based on query flavor
                         // reconstruct the original query message and forward it
-                        leader.send(frontend::Message::Query(body))?;
+                        session
+                            .leader()
+                            .send(frontend::Message::Query(body))
+                            .await
+                            .map_err(|_| Error::Sync)?;
                     }
                 }
             }
             frontend::Message::Forward(frame) => {
                 // pipe this frame directly to a proxied connection
-                leader.send(frontend::Message::Forward(frame))?;
+                session
+                    .leader()
+                    .send(frontend::Message::Forward(frame))
+                    .await
+                    .map_err(|_| Error::Sync)?;
             }
             frontend::Message::PasswordMessage(..)
             | frontend::Message::SASLInitialResponse(..)

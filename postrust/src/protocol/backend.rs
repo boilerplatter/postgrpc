@@ -17,7 +17,7 @@ const SSL_NOT_SUPPORTED_TAG: u8 = b'N';
 
 /// Postgres backend message variants that Postrust cares about
 // FIXME: align with frontend message format style
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Message {
     AuthenticationMd5Password {
         salt: [u8; 4],
@@ -115,6 +115,21 @@ impl Message {
                 let value = buf.read_cstr()?;
 
                 Message::ParameterStatus { name, value }
+            }
+            READY_FOR_QUERY_TAG => {
+                let transaction_status = match buf.read_u8()? {
+                    b'I' => TransactionStatus::Idle,
+                    b'T' => TransactionStatus::Transaction,
+                    b'E' => TransactionStatus::Error,
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid response: invalid transaction status",
+                        ))
+                    }
+                };
+
+                Message::ReadyForQuery { transaction_status }
             }
             _ => Message::Forward(buf.bytes),
         };
@@ -222,7 +237,7 @@ impl Message {
 
 /// Error severity levels
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Severity {
     Error,
     Fatal,
@@ -244,7 +259,7 @@ impl Severity {
 
 /// Possible transaction statuses for use in ReadyForQuery messages
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TransactionStatus {
     Idle,
     Transaction,

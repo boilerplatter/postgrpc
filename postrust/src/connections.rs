@@ -1,7 +1,11 @@
-use crate::protocol::{backend, frontend, startup};
+use crate::{
+    authentication::authenticate,
+    protocol::{backend, frontend, startup},
+};
 use futures_core::Stream;
-use futures_util::{Sink, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use std::{
+    collections::BTreeMap,
     fmt::{self, Display},
     io,
     net::SocketAddr,
@@ -20,6 +24,13 @@ pub enum Error {
     Read(std::io::Error),
     #[error("Error writing next message: {0}")]
     Write(std::io::Error),
+    #[error("Connection attempt failed authorization step")]
+    Unauthorized,
+    #[error("Error connecting to upstream database at {address}: {source}")]
+    TcpConnect {
+        address: SocketAddr,
+        source: std::io::Error,
+    },
 }
 
 /// Stream of new TCP connections from a listener
@@ -84,6 +95,45 @@ impl<C> Display for Connection<C> {
 impl<C> fmt::Debug for Connection<C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(self, formatter)
+    }
+}
+
+impl Connection<backend::Codec> {
+    /// Initiate a brand new backend connection
+    pub async fn connect(
+        address: SocketAddr,
+        user: String,
+        password: String,
+        database: String,
+    ) -> Result<Self, Error> {
+        let mut upstream = TcpStream::connect(address)
+            .await
+            .map(|socket| Connection::new(socket, startup::Codec, address))
+            .map_err(|source| Error::TcpConnect { address, source })?;
+
+        // handle the upstream auth handshake
+        #[allow(clippy::mutable_key_type)]
+        let mut options = BTreeMap::new();
+
+        options.insert("database".into(), database.into());
+        options.insert("application_name".into(), "postrust".into());
+        options.insert("client_encoding".into(), "UTF8".into());
+
+        upstream
+            .send(startup::Message::Startup {
+                user: user.into(),
+                options,
+                version: startup::VERSION,
+            })
+            .await?;
+
+        let mut proxied_connection = Connection::<backend::Codec>::from(upstream);
+
+        authenticate(&mut proxied_connection, password.as_bytes())
+            .await
+            .map_err(|_| Error::Unauthorized)?;
+
+        Ok(proxied_connection)
     }
 }
 
