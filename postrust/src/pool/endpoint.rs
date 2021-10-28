@@ -14,13 +14,15 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use thiserror::Error;
-use tokio::sync::{mpsc::UnboundedSender, RwLock};
+use tokio::sync::{broadcast::error::SendError, mpsc::UnboundedSender, RwLock};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Error reading messages from backend connection: {0}")]
-    Broadcast(#[from] BroadcastStreamRecvError),
+    BroadcastRead(#[from] BroadcastStreamRecvError),
+    #[error("Error sending message from backend connection: {0}")]
+    BroadcastWrite(#[from] SendError<backend::Message>),
     #[error(transparent)]
     Connection(#[from] connections::Error),
     #[error("Error syncing proxied connection")]
@@ -99,7 +101,7 @@ impl ProxiedConnection {
                     }
                 ))
             })
-            .map_err(Error::Broadcast)
+            .map_err(Error::BroadcastRead)
     }
 
     /// Send a frontend message to the connection
@@ -117,7 +119,7 @@ impl From<Connection<backend::Codec>> for ProxiedConnection {
     fn from(connection: Connection<backend::Codec>) -> Self {
         let (mut backend_sink, mut backend_stream) = connection.split();
         let (frontend_sink, mut frontend_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let (backend_broadcast, _) = tokio::sync::broadcast::channel(64);
+        let (backend_broadcast, _) = tokio::sync::broadcast::channel(128);
         let backend_broadcast_transmitter = backend_broadcast.clone();
 
         // send messages from the frontend to the backend through the bounded sender
@@ -132,9 +134,7 @@ impl From<Connection<backend::Codec>> for ProxiedConnection {
         // broadcast messages from the backend to listeners
         tokio::spawn(async move {
             while let Some(message) = backend_stream.try_next().await? {
-                backend_broadcast_transmitter
-                    .send(message)
-                    .map_err(|_| Error::Sync)?;
+                backend_broadcast_transmitter.send(message)?;
             }
 
             Ok::<_, Error>(())

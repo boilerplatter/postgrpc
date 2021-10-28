@@ -10,6 +10,7 @@ use tokio_util::codec::{Decoder, Encoder};
 /// Byte tags for relevant frontend message variants
 const PASSWORD_MESSAGE_TAG: u8 = b'p';
 const QUERY_TAG: u8 = b'Q';
+const TERMINATE_TAG: u8 = b'X';
 
 /// Post-startup Postgres frontend message variants that Postrust cares about
 #[derive(Debug, Clone)]
@@ -18,6 +19,7 @@ pub enum Message {
     SASLResponse(SASLResponseBody),
     PasswordMessage(PasswordMessageBody),
     Query(QueryBody),
+    Terminate,
     // catchall for frames we don't care about
     // FIXME: audit other message types for ill intent
     // especially from programmatic clients
@@ -54,6 +56,7 @@ impl Message {
 
                 Message::Query(QueryBody { query })
             }
+            TERMINATE_TAG => Message::Terminate,
             _ => Message::Forward(buf.bytes),
         };
 
@@ -99,6 +102,10 @@ impl Message {
             }
             Self::Forward(frame) => {
                 bytes.put_slice(&frame);
+            }
+            Self::Terminate => {
+                bytes.put_u8(TERMINATE_TAG);
+                bytes.put_i32(4);
             }
         }
     }

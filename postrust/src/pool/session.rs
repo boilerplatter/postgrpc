@@ -28,6 +28,7 @@ pub enum Error {
 }
 
 /// User session wrapper that brokers messages between clients and pooled clusters
+#[derive(Clone)]
 pub struct Session {
     cluster: Arc<Cluster>,
     transmitter: UnboundedSender<backend::Message>,
@@ -35,7 +36,10 @@ pub struct Session {
 
 impl Session {
     /// Create a new session
-    pub fn new(cluster: Arc<Cluster>, transmitter: UnboundedSender<backend::Message>) -> Self {
+    pub(super) fn new(
+        cluster: Arc<Cluster>,
+        transmitter: UnboundedSender<backend::Message>,
+    ) -> Self {
         Self {
             cluster,
             transmitter,

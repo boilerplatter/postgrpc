@@ -4,7 +4,7 @@ use crate::{
     configuration::Configuration,
     connections::{self, Connection, Connections},
     credentials::{self, Credentials, CredentialsBuilder},
-    pool::{self, Pool},
+    pool::{self, session, Pool},
     protocol::{backend, frontend, startup},
 };
 use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
@@ -20,6 +20,8 @@ pub enum Error {
     Credentials(#[from] credentials::Error),
     #[error(transparent)]
     Pool(#[from] pool::Error),
+    #[error(transparent)]
+    Session(#[from] session::Error),
     #[error("Error syncing proxied connection")]
     Sync,
     #[error("Error listening at {address}: {source}")]
@@ -31,6 +33,8 @@ pub enum Error {
     Unauthorized,
     #[error("Connection closed unexpectedly")]
     UnexpectedEof,
+    #[error("Exiting connection")]
+    Exit, // more of a placeholder than an error
 }
 
 /// The proxy service that handles TCP requests and connections
@@ -78,6 +82,9 @@ impl Proxy {
                             }
                             Error::UnexpectedEof => {
                                 tracing::warn!(error = %error, "Connection closed by client")
+                            }
+                            Error::Exit => {
+                                tracing::info!("Connection terminated by user")
                             }
                             error => {
                                 tracing::error!(error = %error, "Closing Connection with error")
@@ -223,7 +230,7 @@ async fn handle_proxied_messages(
 
         async move {
             while let Some(message) = session_messages.recv().await {
-                transmitter.send(message).map_err(|_| Error::Sync)?; // FIXME: make this error better
+                transmitter.send(message).map_err(|_| Error::Sync)?;
             }
 
             Ok::<_, Error>(())
@@ -231,7 +238,7 @@ async fn handle_proxied_messages(
     });
 
     // aggregate messages from the pool and this proxy back to the user
-    let (mut user_connection, mut user_messages) = connection.split();
+    let (mut user_connection, user_messages) = connection.split();
 
     tokio::spawn(async move {
         while let Some(message) = receiver.recv().await {
@@ -243,62 +250,76 @@ async fn handle_proxied_messages(
         Ok::<_, Error>(())
     });
 
+    // share the statement guard
+    let statement_guard = Arc::new(statement_guard);
+
     // handle messages from the user connection stream
-    while let Some(message) = user_messages.try_next().await? {
-        match message {
-            frontend::Message::Query(body) => {
-                tracing::info!(body = ?body, "Query message received");
+    user_messages
+        .map_err(Error::Connection)
+        .try_for_each_concurrent(None, |message| {
+            let session = session.clone();
+            let transmitter = transmitter.clone();
+            let statement_guard = Arc::clone(&statement_guard);
 
-                let query = body.query();
-                let statement = String::from_utf8_lossy(&query);
+            async move {
+                match message {
+                    // FIXME: supported extended query protocol
+                    frontend::Message::Query(body) => {
+                        tracing::debug!(body = ?body, "Query message received");
 
-                match statement_guard.guard(&statement) {
-                    Err(error) => {
-                        tracing::warn!(reason = %error, "Statement rejected");
+                        let query = body.query();
+                        let statement = String::from_utf8_lossy(&query);
 
-                        // send back an error response
-                        transmitter
-                            .send(backend::Message::ErrorResponse {
-                                code: "42501".into(),
-                                message: error.to_string().into(),
-                                severity: backend::Severity::Error,
-                            })
-                            .map_err(|_| Error::Sync)?;
+                        match statement_guard.guard(&statement) {
+                            Err(error) => {
+                                tracing::warn!(reason = %error, "Statement rejected");
 
-                        // return the ReadyForQuery message
-                        transmitter
-                            .send(backend::Message::ReadyForQuery {
-                                transaction_status: backend::TransactionStatus::Idle,
-                            })
-                            .map_err(|_| Error::Sync)?;
+                                // send back an error response
+                                transmitter
+                                    .send(backend::Message::ErrorResponse {
+                                        code: "42501".into(),
+                                        message: error.to_string().into(),
+                                        severity: backend::Severity::Error,
+                                    })
+                                    .map_err(|_| Error::Sync)?;
+
+                                // return the ReadyForQuery message
+                                transmitter
+                                    .send(backend::Message::ReadyForQuery {
+                                        transaction_status: backend::TransactionStatus::Idle,
+                                    })
+                                    .map_err(|_| Error::Sync)?;
+                            }
+                            Ok(..) => {
+                                // FIXME: use leader or follower based on query flavor
+                                // reconstruct the original query message and forward it
+                                session
+                                    .leader()
+                                    .send(frontend::Message::Query(body))
+                                    .await?;
+                            }
+                        }
                     }
-                    Ok(..) => {
-                        // FIXME: use leader or follower based on query flavor
-                        // reconstruct the original query message and forward it
+                    frontend::Message::Forward(frame) => {
+                        // pipe this frame directly to a proxied connection
                         session
                             .leader()
-                            .send(frontend::Message::Query(body))
-                            .await
-                            .map_err(|_| Error::Sync)?;
+                            .send(frontend::Message::Forward(frame))
+                            .await?;
+                    }
+                    frontend::Message::Terminate => return Err(Error::Exit),
+                    frontend::Message::PasswordMessage(..)
+                    | frontend::Message::SASLInitialResponse(..)
+                    | frontend::Message::SASLResponse(..) => {
+                        tracing::warn!("Authentication message received outside of a handshake");
+                        return Err(Error::Exit);
                     }
                 }
+
+                Ok(())
             }
-            frontend::Message::Forward(frame) => {
-                // pipe this frame directly to a proxied connection
-                session
-                    .leader()
-                    .send(frontend::Message::Forward(frame))
-                    .await
-                    .map_err(|_| Error::Sync)?;
-            }
-            frontend::Message::PasswordMessage(..)
-            | frontend::Message::SASLInitialResponse(..)
-            | frontend::Message::SASLResponse(..) => {
-                tracing::warn!("Authentication message received outside of a handshake");
-                break;
-            }
-        }
-    }
+        })
+        .await?;
 
     Ok(())
 }

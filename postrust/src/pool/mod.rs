@@ -8,7 +8,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 mod cluster;
 mod endpoint;
-mod session;
+pub mod session;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -69,6 +69,8 @@ impl Pool {
             .map_err(|_| Error::Flush)?;
 
         // return the receiver and active session
+        tracing::info!("Session initiated");
+
         Ok((Session::new(cluster, transmitter), receiver))
     }
 }
