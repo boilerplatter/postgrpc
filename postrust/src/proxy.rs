@@ -1,4 +1,3 @@
-#![allow(clippy::mutable_key_type)]
 use crate::{
     authentication::ClusterConfiguration,
     configuration::Configuration,
@@ -84,10 +83,10 @@ impl Proxy {
                                 tracing::warn!(error = %error, "Connection closed by client")
                             }
                             Error::Exit => {
-                                tracing::info!("Connection terminated by user")
+                                tracing::info!("Session terminated by user")
                             }
                             error => {
-                                tracing::error!(error = %error, "Closing Connection with error")
+                                tracing::error!(error = %error, "Closing Session with error")
                             }
                         }
                     }

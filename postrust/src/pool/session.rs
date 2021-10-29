@@ -1,4 +1,3 @@
-#![allow(clippy::mutable_key_type)]
 use super::{
     cluster::{self, Cluster},
     endpoint,
@@ -64,36 +63,15 @@ impl Leader {
     #[tracing::instrument(skip(self))]
     pub async fn send(&self, message: frontend::Message) -> Result<(), Error> {
         // pick the next endpoint in the round robin endpoint pool
-        // FIXME: encapsulate all of this leader-picking logic at the cluster level
         let leader = &self.cluster.leaders.next().ok_or(Error::MissingLeader)?;
 
-        // get the newly-created or idle connection
-        let connections = leader.connections.read().await;
-
-        tracing::debug!(connections = %connections.len(), "Active connections for this endpoint");
-
         // initialize a connection and subscribe to its messages
-        match connections.iter().find(|connection| connection.is_idle()) {
-            Some(connection) => {
-                let mut backend_messages = connection.subscribe();
-                connection.send(message)?;
-                drop(connections);
+        let mut backend_messages = leader.subscribe_next_idle(Some(message)).await?;
 
-                // forward backend messages back to the clients
-                while let Some(message) = backend_messages.try_next().await? {
-                    self.transmitter.send(message).map_err(|_| Error::Sync)?;
-                }
-            }
-            None => {
-                drop(connections);
-                let mut backend_messages = leader.add_connection(message).await?;
-
-                // forward backend messages back to the clients
-                while let Some(message) = backend_messages.try_next().await? {
-                    self.transmitter.send(message).map_err(|_| Error::Sync)?;
-                }
-            }
-        };
+        // forward backend messages back to the clients
+        while let Some(message) = backend_messages.try_next().await? {
+            self.transmitter.send(message).map_err(|_| Error::Sync)?;
+        }
 
         // send the skipped ReadyForQuery message
         self.transmitter

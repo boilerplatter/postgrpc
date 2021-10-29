@@ -1,4 +1,3 @@
-#![allow(clippy::mutable_key_type)]
 use crate::{
     connections::{self, Connection},
     protocol::{
@@ -7,14 +6,18 @@ use crate::{
     },
 };
 use futures_core::Stream;
-use futures_util::{SinkExt, StreamExt, TryStreamExt};
+use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use thiserror::Error;
-use tokio::sync::{broadcast::error::SendError, mpsc::UnboundedSender, RwLock};
+use tokio::sync::{broadcast, mpsc::UnboundedSender, RwLock};
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 #[derive(Debug, Error)]
@@ -22,24 +25,18 @@ pub enum Error {
     #[error("Error reading messages from backend connection: {0}")]
     BroadcastRead(#[from] BroadcastStreamRecvError),
     #[error("Error sending message from backend connection: {0}")]
-    BroadcastWrite(#[from] SendError<backend::Message>),
+    BroadcastWrite(#[from] broadcast::error::SendError<backend::Message>),
     #[error(transparent)]
     Connection(#[from] connections::Error),
     #[error("Error syncing proxied connection")]
     Sync,
+    #[error("Connection is inactive")]
+    Inactivity(#[from] tokio::time::error::Elapsed),
 }
 
 /// Postrust's only supported protocol version
+// TODO: see if we can support a range of these
 const SUPPORTED_PROTOCOL_VERSION: i32 = 196608;
-
-// TODO:
-// set up a cleanup process for expired pools
-// send auth requests (if configured) to gRPC or HTTP service
-// if there are leaders and followers, test AST with postguard for read versus writes
-//
-// TODO low-priority:
-// add transaction-level pooling
-// add session-level pooling
 
 /// Database connection endpoint configuration
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -87,14 +84,15 @@ impl fmt::Debug for Endpoint {
 pub struct ProxiedConnection {
     frontend_sink: UnboundedSender<frontend::Message>,
     backend_broadcast: tokio::sync::broadcast::Sender<backend::Message>,
+    is_terminated: tokio::sync::watch::Receiver<bool>,
 }
 
 impl ProxiedConnection {
     /// Subscribe to the next ReadyForQuery-terminated chunk of messages from the backend
-    pub fn subscribe(&self) -> impl Stream<Item = Result<backend::Message, Error>> {
+    fn subscribe(&self) -> impl Stream<Item = Result<backend::Message, Error>> {
         BroadcastStream::new(self.backend_broadcast.subscribe())
             .try_take_while(|message| {
-                futures_util::future::ok(!matches!(
+                future::ok(!matches!(
                     message,
                     backend::Message::ReadyForQuery {
                         transaction_status: TransactionStatus::Idle,
@@ -105,76 +103,126 @@ impl ProxiedConnection {
     }
 
     /// Send a frontend message to the connection
-    pub fn send(&self, message: frontend::Message) -> Result<(), Error> {
+    fn send(&self, message: frontend::Message) -> Result<(), Error> {
         self.frontend_sink.send(message).map_err(|_| Error::Sync)
-    }
-
-    /// Check to see if the connection is currently handling messages
-    pub fn is_idle(&self) -> bool {
-        self.backend_broadcast.receiver_count() == 0
     }
 }
 
 impl From<Connection<backend::Codec>> for ProxiedConnection {
     fn from(connection: Connection<backend::Codec>) -> Self {
+        let remote_address = connection.peer();
         let (mut backend_sink, mut backend_stream) = connection.split();
         let (frontend_sink, mut frontend_receiver) = tokio::sync::mpsc::unbounded_channel();
         let (backend_broadcast, _) = tokio::sync::broadcast::channel(128);
         let backend_broadcast_transmitter = backend_broadcast.clone();
 
+        // FIXME: make this configurable
+        // consider alternatives to handle long-running queries
+        // (right now, this exactly the same as statement timeouts)
+        let inactivity_limit = Duration::from_secs(30);
+
         // send messages from the frontend to the backend through the bounded sender
-        tokio::spawn(async move {
-            while let Some(message) = frontend_receiver.recv().await {
-                backend_sink.send(message).await.map_err(|_| Error::Sync)?;
+        #[allow(unreachable_code)]
+        let proxy = tokio::spawn({
+            async move {
+                loop {
+                    match tokio::time::timeout(inactivity_limit, frontend_receiver.recv()).await {
+                        Ok(Some(message)) => {
+                            backend_sink.send(message).await.map_err(|_| Error::Sync)?
+                        }
+                        Ok(None) => backend_sink
+                            .send(frontend::Message::Terminate)
+                            .await
+                            .map_err(|_| Error::Sync)?,
+                        Err(error) => {
+                            backend_sink
+                                .send(frontend::Message::Terminate)
+                                .await
+                                .map_err(|_| Error::Sync)?;
+
+                            return Err(Error::Inactivity(error));
+                        }
+                    }
+                }
+
+                Ok::<_, Error>(())
+            }
+        });
+
+        // broadcast messages from the backend to listeners
+        let broadcast = tokio::spawn(async move {
+            while let Some(message) = backend_stream.try_next().await? {
+                if let Err(error) = backend_broadcast_transmitter
+                    .send(message)
+                    .map_err(Error::BroadcastWrite)
+                {
+                    // FIXME: figure out how/if to communicate this to end users
+                    tracing::warn!(error = %error, "Error sending message from backend to listeners");
+                }
             }
 
             Ok::<_, Error>(())
         });
 
-        // broadcast messages from the backend to listeners
+        // listen to previous spawned tasks, yielding when one is complete
+        let (termination_trigger, is_terminated) = tokio::sync::watch::channel(false);
+
         tokio::spawn(async move {
-            while let Some(message) = backend_stream.try_next().await? {
-                backend_broadcast_transmitter.send(message)?;
+            let result = tokio::select! {
+                result = proxy => result,
+                result = broadcast => result
+            };
+
+            match result {
+                Ok(Ok(())) => tracing::warn!(
+                    remote_address = %remote_address,
+                    "Closing proxied connection due to disconnection"
+                ),
+                Ok(Err(error)) => match error {
+                    Error::Inactivity(..) => {
+                        tracing::info!(
+                            remote_address = %remote_address,
+                            "Closing proxied connection due to inactivity"
+                        )
+                    }
+                    error => {
+                        tracing::warn!(
+                            remote_address = %remote_address,
+                            error = %&error,
+                            "Closing proxied connection due to unrecoverable error"
+                        )
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        remote_address = %remote_address,
+                        error = %&error,
+                        "Closing proxied connection with task error"
+                    )
+                }
             }
 
-            Ok::<_, Error>(())
+            if let Err(error) = termination_trigger.send(true) {
+                tracing::error!(
+                    remote_address = %remote_address,
+                    error = %&error,
+                    "Error notifying connection of its termination"
+                );
+            }
         });
 
         Self {
             frontend_sink,
             backend_broadcast,
+            is_terminated,
         }
-    }
-}
-
-impl PartialEq for ProxiedConnection {
-    fn eq(&self, other: &Self) -> bool {
-        self.backend_broadcast.receiver_count() == other.backend_broadcast.receiver_count()
-    }
-}
-
-impl Eq for ProxiedConnection {}
-
-impl PartialOrd for ProxiedConnection {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ProxiedConnection {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let size = self.backend_broadcast.receiver_count();
-        let other_size = other.backend_broadcast.receiver_count();
-
-        // reverse-ordered by size
-        size.cmp(&other_size)
     }
 }
 
 /// Set of load-balance-ready connections proxied over a channel
 pub struct ProxiedConnections {
     /// Sink-like and Stream-like pairs for each connection
-    pub connections: RwLock<Vec<ProxiedConnection>>,
+    pub connections: Arc<RwLock<Vec<ProxiedConnection>>>,
     /// Endpoint configuration for spawning new connections
     endpoint: Endpoint,
 }
@@ -190,53 +238,125 @@ impl ProxiedConnections {
             .map(ProxiedConnection::from)
             .collect();
 
+        let connections = Arc::new(RwLock::new(connections));
+
+        // Clean up old connections periodically
+        tokio::spawn({
+            let connections = Arc::clone(&connections);
+
+            async move {
+                loop {
+                    let connections_read = connections.read().await;
+                    let proxied_connections: &Vec<_> = &*connections_read;
+                    let total_connections = proxied_connections.len();
+                    let terminated_connections: Vec<_> = proxied_connections
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, connection)| *connection.is_terminated.borrow())
+                        .map(|(index, _)| index)
+                        .collect();
+
+                    // TODO: measure how long this takes
+                    if !terminated_connections.is_empty() {
+                        tracing::debug!(
+                            "Cleaning up {count} terminated connections",
+                            count = terminated_connections.len(),
+                        );
+
+                        drop(connections_read);
+
+                        let pruned_connections: Vec<ProxiedConnection> =
+                            Vec::with_capacity(total_connections - terminated_connections.len());
+
+                        let mut connections = connections.write().await;
+
+                        let previous_connections =
+                            std::mem::replace(&mut *connections, pruned_connections);
+
+                        for (index, connection) in previous_connections.into_iter().enumerate() {
+                            if !terminated_connections.contains(&index) {
+                                connections.push(connection);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         Self {
-            connections: RwLock::new(connections),
+            connections,
             endpoint,
         }
     }
 
-    /// Grow the ProxiedConnections pool using the existing endpoint configuration
+    /// Subscribe to an idle or newly-created connection
     #[tracing::instrument]
-    pub async fn add_connection(
+    pub async fn subscribe_next_idle(
         &self,
-        init_message: frontend::Message,
+        init_message: Option<frontend::Message>,
     ) -> Result<impl Stream<Item = Result<backend::Message, Error>>, Error> {
-        tracing::info!("Adding connection for endpoint");
+        let connections = self.connections.read().await;
 
-        let address = self.endpoint.address();
+        tracing::debug!(connections = %connections.len(), "Active connections for this endpoint");
 
-        let proxied_connection = Connection::<backend::Codec>::connect(
-            address,
-            self.endpoint.user.to_string(),
-            self.endpoint.password.to_string(),
-            self.endpoint.database.to_string(),
-        )
-        .await
-        .map(ProxiedConnection::from)?;
+        // subscribe to the next idle or new connection
+        match connections.iter().find(|connection| {
+            connection.backend_broadcast.receiver_count() == 0
+                && !*connection.is_terminated.borrow()
+        }) {
+            Some(connection) => {
+                tracing::debug!("Reusing existing connection for subscription");
 
-        tracing::debug!("Proxied Connection created for endpoint");
+                let subscription = connection.subscribe();
 
-        // drain the entire proxied_connection stream
-        proxied_connection
-            .subscribe()
-            .try_for_each(|_| async { Ok(()) })
-            .await?;
+                if let Some(init_message) = init_message {
+                    connection.send(init_message)?;
+                }
 
-        tracing::debug!("Proxied Connection drained of startup messages");
+                Ok(subscription)
+            }
+            None => {
+                drop(connections);
 
-        // set up the backend message stream from the drained connection
-        let backend_messages = proxied_connection.subscribe();
+                tracing::info!("Adding connection for endpoint");
 
-        // send the initial message to the new connection
-        proxied_connection.send(init_message)?;
+                let address = self.endpoint.address();
 
-        {
-            // store the connection again for later
-            self.connections.write().await.push(proxied_connection);
+                let proxied_connection = Connection::<backend::Codec>::connect(
+                    address,
+                    self.endpoint.user.to_string(),
+                    self.endpoint.password.to_string(),
+                    self.endpoint.database.to_string(),
+                )
+                .await
+                .map(ProxiedConnection::from)?;
+
+                tracing::debug!("Proxied Connection created for endpoint");
+
+                // drain the proxied_connection stream of startup messages
+                proxied_connection
+                    .subscribe()
+                    .try_for_each(|_| future::ok(()))
+                    .await?;
+
+                tracing::debug!("Proxied Connection drained of startup messages");
+
+                // set up the backend message stream from the drained connection
+                let backend_messages = proxied_connection.subscribe();
+
+                // send the initial message to the new connection
+                if let Some(init_message) = init_message {
+                    proxied_connection.send(init_message)?;
+                }
+
+                {
+                    // store the connection again for later
+                    self.connections.write().await.push(proxied_connection);
+                }
+
+                Ok(backend_messages)
+            }
         }
-
-        Ok(backend_messages)
     }
 }
 

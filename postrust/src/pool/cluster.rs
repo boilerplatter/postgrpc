@@ -54,14 +54,10 @@ impl Cluster {
 
         // drain the startup messages from the leader
         let proxied_leader_connections = ProxiedConnections::new(leader, [proxied_connection]);
+
         let startup_messages = proxied_leader_connections
-            .connections
-            .read()
-            .await
-            .iter()
-            .find(|connection| connection.is_idle())
-            .ok_or(Error::MissingLeader)?
-            .subscribe()
+            .subscribe_next_idle(None)
+            .await?
             .try_collect()
             .await?;
 
