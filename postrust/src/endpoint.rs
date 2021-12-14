@@ -6,7 +6,7 @@ use crate::{
     },
 };
 use futures_core::Stream;
-use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
+use futures_util::{future, stream, SinkExt, StreamExt, TryStreamExt};
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
@@ -89,6 +89,7 @@ pub struct ProxiedConnection {
 
 impl ProxiedConnection {
     /// Subscribe to the next ReadyForQuery-terminated chunk of messages from the backend
+    // this subscription strategy enforces transaction-level subscriptions
     fn subscribe(&self) -> impl Stream<Item = Result<backend::Message, Error>> {
         BroadcastStream::new(self.backend_broadcast.subscribe())
             .try_take_while(|message| {
@@ -100,11 +101,9 @@ impl ProxiedConnection {
                 ))
             })
             .map_err(Error::BroadcastRead)
-    }
-
-    /// Send a frontend message to the connection
-    fn send(&self, message: frontend::Message) -> Result<(), Error> {
-        self.frontend_sink.send(message).map_err(|_| Error::Sync)
+            .chain(stream::once(future::ok(backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle,
+            })))
     }
 }
 
@@ -117,8 +116,8 @@ impl From<Connection<backend::Codec>> for ProxiedConnection {
         let backend_broadcast_transmitter = backend_broadcast.clone();
 
         // FIXME: make this configurable
-        // consider alternatives to handle long-running queries
-        // (right now, this exactly the same as statement timeouts)
+        // consider alternatives to handle long-running queries (like checking for strong
+        // references in something like an Arc!)
         let inactivity_limit = Duration::from_secs(30);
 
         // send messages from the frontend to the backend through the bounded sender
@@ -293,8 +292,13 @@ impl ProxiedConnections {
     #[tracing::instrument]
     pub async fn subscribe_next_idle(
         &self,
-        init_message: Option<frontend::Message>,
-    ) -> Result<impl Stream<Item = Result<backend::Message, Error>>, Error> {
+    ) -> Result<
+        (
+            UnboundedSender<frontend::Message>,
+            impl Stream<Item = Result<backend::Message, Error>>,
+        ),
+        Error,
+    > {
         let connections = self.connections.read().await;
 
         tracing::debug!(connections = %connections.len(), "Active connections for this endpoint");
@@ -307,13 +311,7 @@ impl ProxiedConnections {
             Some(connection) => {
                 tracing::debug!("Reusing existing connection for subscription");
 
-                let subscription = connection.subscribe();
-
-                if let Some(init_message) = init_message {
-                    connection.send(init_message)?;
-                }
-
-                Ok(subscription)
+                Ok((connection.frontend_sink.clone(), connection.subscribe()))
             }
             None => {
                 drop(connections);
@@ -322,7 +320,7 @@ impl ProxiedConnections {
 
                 let address = self.endpoint.address();
 
-                let proxied_connection = Connection::<backend::Codec>::connect(
+                let connection = Connection::<backend::Codec>::connect(
                     address,
                     self.endpoint.user.to_string(),
                     self.endpoint.password.to_string(),
@@ -333,8 +331,8 @@ impl ProxiedConnections {
 
                 tracing::debug!("Proxied Connection created for endpoint");
 
-                // drain the proxied_connection stream of startup messages
-                proxied_connection
+                // drain the proxied connection stream of startup messages
+                connection
                     .subscribe()
                     .try_for_each(|_| future::ok(()))
                     .await?;
@@ -342,19 +340,15 @@ impl ProxiedConnections {
                 tracing::debug!("Proxied Connection drained of startup messages");
 
                 // set up the backend message stream from the drained connection
-                let backend_messages = proxied_connection.subscribe();
-
-                // send the initial message to the new connection
-                if let Some(init_message) = init_message {
-                    proxied_connection.send(init_message)?;
-                }
+                let backend_messages = connection.subscribe();
+                let frontend_sink = connection.frontend_sink.clone();
 
                 {
                     // store the connection again for later
-                    self.connections.write().await.push(proxied_connection);
+                    self.connections.write().await.push(connection);
                 }
 
-                Ok(backend_messages)
+                Ok((frontend_sink, backend_messages))
             }
         }
     }

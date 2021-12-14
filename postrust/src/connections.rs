@@ -20,6 +20,11 @@ use tokio_util::codec::{Encoder, Framed};
 pub enum Error {
     #[error("Error accepting connection: {0}")]
     Accept(std::io::Error),
+    #[error("Error listening at {address}: {source}")]
+    Listen {
+        address: SocketAddr,
+        source: std::io::Error,
+    },
     #[error("Error reading next message: {0}")]
     Read(std::io::Error),
     #[error("Error writing next message: {0}")]
@@ -38,9 +43,16 @@ pub struct Connections {
     listener: TcpListener,
 }
 
-impl From<TcpListener> for Connections {
-    fn from(listener: TcpListener) -> Self {
-        Self { listener }
+impl Connections {
+    #[tracing::instrument]
+    pub async fn new(address: SocketAddr) -> Result<Self, Error> {
+        let listener = TcpListener::bind(&address)
+            .await
+            .map_err(|source| Error::Listen { address, source })?;
+
+        tracing::debug!("Connections stream initialized");
+
+        Ok(Self { listener })
     }
 }
 

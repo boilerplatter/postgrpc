@@ -1,6 +1,6 @@
 use crate::{
     connections::{self, Connection},
-    pool::Endpoint,
+    endpoint::Endpoint,
     protocol::{
         backend,
         frontend::{self, SASLInitialResponseBody, SASLResponseBody},
@@ -22,6 +22,7 @@ pub enum Error {
 // TODO: turn this into a proto for gRPC handlers, too
 // FIXME: move this to a separate cluster module
 /// Response from the auth query (remote or otherwise)
+#[derive(Debug)]
 pub struct ClusterConfiguration {
     pub leaders: Vec<Endpoint>,
     pub followers: Vec<Endpoint>,

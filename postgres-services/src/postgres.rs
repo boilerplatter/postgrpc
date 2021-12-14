@@ -2,6 +2,8 @@ use postgres_pool::{Connection, Pool};
 use std::sync::Arc;
 
 /// Protocol-agnostic Postgres handlers for any connection pool
+// TODO: regular old comment
+// NOTE: this is a note
 #[derive(Clone)]
 pub struct Postgres<P> {
     pool: Arc<P>,

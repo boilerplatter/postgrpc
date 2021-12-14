@@ -8,7 +8,11 @@ use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Byte tags for relevant frontend message variants
+const DESCRIBE_TAG: u8 = b'D';
+const BIND_TAG: u8 = b'B';
+const EXECUTE_TAG: u8 = b'E';
 const PASSWORD_MESSAGE_TAG: u8 = b'p';
+const PARSE_TAG: u8 = b'F';
 const QUERY_TAG: u8 = b'Q';
 const TERMINATE_TAG: u8 = b'X';
 
@@ -17,12 +21,14 @@ const TERMINATE_TAG: u8 = b'X';
 pub enum Message {
     SASLInitialResponse(SASLInitialResponseBody),
     SASLResponse(SASLResponseBody),
+    Bind(BindBody),
+    Execute(ExecuteBody),
+    Parse(ParseBody),
+    Describe(DescribeBody),
     PasswordMessage(PasswordMessageBody),
     Query(QueryBody),
     Terminate,
     // catchall for frames we don't care about
-    // FIXME: audit other message types for ill intent
-    // especially from programmatic clients
     Forward(Bytes),
 }
 
@@ -50,6 +56,119 @@ impl Message {
                 let password = buf.read_cstr()?;
 
                 Message::PasswordMessage(PasswordMessageBody { password })
+            }
+            BIND_TAG => {
+                let portal = buf.read_cstr()?;
+                let statement = buf.read_cstr()?;
+                let parameter_format_code_length: usize =
+                    buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "invalid parameter format code length format: reading i16",
+                        )
+                    })?;
+
+                let mut parameter_format_codes = Vec::with_capacity(parameter_format_code_length);
+
+                for _ in 0..parameter_format_code_length {
+                    let format_code = buf.read_i16::<BigEndian>()?;
+                    parameter_format_codes.push(format_code);
+                }
+
+                let parameter_count: usize =
+                    buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "invalid parameter count format: reading i16",
+                        )
+                    })?;
+
+                let mut parameters = Vec::with_capacity(parameter_count);
+
+                for _ in 0..parameter_count {
+                    let parameter_length =
+                        buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "invalid parameter length format: reading i16",
+                            )
+                        })?;
+
+                    let mut parameter = Vec::with_capacity(parameter_length);
+                    unsafe { parameter.set_len(parameter_length) };
+                    std::io::Read::read(&mut buf, &mut parameter)?;
+                    parameters.push(parameter.into());
+                }
+
+                let column_format_code_length: usize =
+                    buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "invalid column format code length format: reading i16",
+                        )
+                    })?;
+
+                let mut column_format_codes = Vec::with_capacity(column_format_code_length);
+
+                for _ in 0..column_format_code_length {
+                    let format_code = buf.read_i16::<BigEndian>()?;
+                    column_format_codes.push(format_code);
+                }
+
+                Message::Bind(BindBody {
+                    portal,
+                    statement,
+                    parameter_format_codes,
+                    parameters,
+                    column_format_codes,
+                })
+            }
+            EXECUTE_TAG => {
+                let portal = buf.read_cstr()?;
+                let max_rows = buf.read_i32::<BigEndian>()?;
+
+                Message::Execute(ExecuteBody { portal, max_rows })
+            }
+            PARSE_TAG => {
+                let name = buf.read_cstr()?;
+                let query = buf.read_cstr()?;
+                let parameter_length: usize =
+                    buf.read_i32::<BigEndian>()?.try_into().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "invalid parameter length format: reading i32",
+                        )
+                    })?;
+
+                let mut parameter_types = Vec::with_capacity(parameter_length);
+
+                for _ in 0..parameter_length {
+                    let type_ = buf.read_i32::<BigEndian>()?;
+                    parameter_types.push(type_);
+                }
+
+                Message::Parse(ParseBody {
+                    name,
+                    query,
+                    parameter_types,
+                })
+            }
+            DESCRIBE_TAG => {
+                let variant = buf.read_u8()?;
+                let name = buf.read_cstr()?;
+
+                let body = match variant {
+                    b'P' => DescribeBody::Portal { name },
+                    b'S' => DescribeBody::Statement { name },
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid describe format: only statement or portal names supported",
+                        ));
+                    }
+                };
+
+                Message::Describe(body)
             }
             QUERY_TAG => {
                 let query = buf.read_cstr()?;
@@ -94,6 +213,99 @@ impl Message {
                 bytes.put_i32(4 + (data.len() as i32));
                 bytes.put_slice(&data);
             }
+            Self::Describe(body) => {
+                bytes.put_u8(DESCRIBE_TAG);
+
+                let (name, variant) = match body {
+                    DescribeBody::Portal { name } => (name, b'P'),
+                    DescribeBody::Statement { name } => (name, b'S'),
+                };
+
+                bytes.put_i32(4 + 4 + (name.len() as i32) + 1);
+                bytes.put_u8(variant);
+                bytes.put_slice(&name);
+                bytes.put_u8(0);
+            }
+            Self::Bind(BindBody {
+                portal,
+                statement,
+                parameter_format_codes,
+                parameters,
+                column_format_codes,
+            }) => {
+                let parameter_format_count = parameter_format_codes.len() as i32;
+                let column_format_count = column_format_codes.len() as i32;
+                let parameter_count = parameters.len() as i32;
+                let parameter_length = parameters.iter().fold(0, |mut length, parameter| {
+                    length += 1;
+                    length += parameter.len();
+                    length
+                }) as i32;
+
+                bytes.put_u8(BIND_TAG);
+                bytes.put_i32(
+                    4 + (portal.len() as i32)
+                        + 1
+                        + (statement.len() as i32)
+                        + 1
+                        + 1
+                        + parameter_format_count
+                        + 1
+                        + parameter_length
+                        + 1
+                        + column_format_count,
+                );
+                bytes.put_slice(&portal);
+                bytes.put_u8(0);
+                bytes.put_slice(&statement);
+                bytes.put_u8(0);
+                bytes.put_i16(parameter_format_count as i16);
+
+                for format_code in parameter_format_codes {
+                    bytes.put_i16(format_code);
+                }
+
+                bytes.put_i16(parameter_count as i16);
+
+                for parameter in parameters {
+                    bytes.put_i32(parameter.len() as i32);
+                    bytes.put_slice(&parameter);
+                }
+
+                bytes.put_i16(column_format_count as i16);
+
+                for format_code in column_format_codes {
+                    bytes.put_i16(format_code);
+                }
+            }
+            Self::Execute(ExecuteBody { portal, max_rows }) => {
+                bytes.put_u8(EXECUTE_TAG);
+                bytes.put_i32(4 + (portal.len() as i32) + 1 + 1);
+                bytes.put_slice(&portal);
+                bytes.put_u8(0);
+                bytes.put_i32(max_rows);
+            }
+            Self::Parse(ParseBody {
+                name,
+                query,
+                parameter_types,
+            }) => {
+                let parameter_count = parameter_types.len() as i32;
+
+                bytes.put_u8(PARSE_TAG);
+                bytes.put_i32(
+                    4 + (name.len() as i32) + 1 + (query.len() as i32) + 1 + 1 + parameter_count,
+                );
+                bytes.put_slice(&name);
+                bytes.put_u8(0);
+                bytes.put_slice(&query);
+                bytes.put_u8(0);
+                bytes.put_i32(parameter_count);
+
+                for type_ in parameter_types {
+                    bytes.put_i32(type_);
+                }
+            }
             Self::Query(QueryBody { query }) => {
                 bytes.put_u8(QUERY_TAG);
                 bytes.put_i32(4 + (query.len() as i32) + 1);
@@ -124,10 +336,62 @@ pub struct SASLResponseBody {
 }
 
 #[derive(Debug, Clone)]
+pub struct BindBody {
+    portal: Bytes,
+    statement: Bytes,
+    parameter_format_codes: Vec<i16>,
+    parameters: Vec<Bytes>,
+    column_format_codes: Vec<i16>,
+}
+
+impl Into<Message> for BindBody {
+    fn into(self) -> Message {
+        Message::Bind(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecuteBody {
+    portal: Bytes,
+    max_rows: i32,
+}
+
+impl Into<Message> for ExecuteBody {
+    fn into(self) -> Message {
+        Message::Execute(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DescribeBody {
+    Portal { name: Bytes },
+    Statement { name: Bytes },
+}
+
+impl Into<Message> for DescribeBody {
+    fn into(self) -> Message {
+        Message::Describe(self)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ParseBody {
     name: Bytes,
     query: Bytes,
-    storage: Bytes,
+    parameter_types: Vec<i32>,
+}
+
+impl ParseBody {
+    #[inline]
+    pub fn query(&self) -> Bytes {
+        self.query.slice(..)
+    }
+}
+
+impl Into<Message> for ParseBody {
+    fn into(self) -> Message {
+        Message::Parse(self)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +414,12 @@ impl QueryBody {
     #[inline]
     pub fn query(&self) -> Bytes {
         self.query.slice(..)
+    }
+}
+
+impl Into<Message> for QueryBody {
+    fn into(self) -> Message {
+        Message::Query(self)
     }
 }
 

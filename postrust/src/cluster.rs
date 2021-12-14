@@ -1,9 +1,10 @@
-use super::endpoint::{self, Endpoint, ProxiedConnections, RoundRobinEndpoints};
 use crate::{
     connections::{self, Connection},
+    endpoint::{self, Endpoint, ProxiedConnections, RoundRobinEndpoints},
     protocol::backend,
 };
 use futures_util::TryStreamExt;
+use once_cell::sync::Lazy;
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -19,14 +20,18 @@ pub enum Error {
 }
 
 /// Pooled clusters keyed by configurations
-pub type Clusters = RwLock<HashMap<(Vec<Endpoint>, Vec<Endpoint>), Arc<Cluster>>>;
+pub static CLUSTERS: Lazy<RwLock<HashMap<Key, Arc<Cluster>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Cluster identifier based on the leaders and follower endpoint configurations
+type Key = (Vec<Endpoint>, Vec<Endpoint>);
 
 /// Wrapper around the cluster connections for a single auth response
 pub struct Cluster {
     startup_messages: Vec<backend::Message>,
-    pub(super) leaders: RoundRobinEndpoints,
+    pub leaders: RoundRobinEndpoints,
     #[allow(unused)]
-    pub(super) followers: RoundRobinEndpoints,
+    pub followers: RoundRobinEndpoints,
 }
 
 impl Cluster {
@@ -55,11 +60,9 @@ impl Cluster {
         // drain the startup messages from the leader
         let proxied_leader_connections = ProxiedConnections::new(leader, [proxied_connection]);
 
-        let startup_messages = proxied_leader_connections
-            .subscribe_next_idle(None)
-            .await?
-            .try_collect()
-            .await?;
+        let (_, backend_messages) = proxied_leader_connections.subscribe_next_idle().await?;
+
+        let startup_messages = backend_messages.try_collect().await?;
 
         // store the endpoints and connections for later use
         let proxied_leaders = RoundRobinEndpoints::new(
