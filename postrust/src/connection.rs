@@ -3,7 +3,7 @@ use crate::{
     tcp,
     transaction::Transaction,
 };
-use futures_util::{stream::SplitStream, Sink, SinkExt, StreamExt};
+use futures_util::{stream::SplitStream, Sink, SinkExt, StreamExt, TryStreamExt};
 use std::{
     collections::HashSet,
     pin::Pin,
@@ -21,18 +21,42 @@ pub enum Error {
 }
 /// Proxied database connection for use with the Pool
 pub struct Connection {
-    /// set of prepared statements on this connection for routing of dependent messages
-    prepared_statements: HashSet<String>,
     /// sink for clients to send frontend messages
     frontend_sink: UnboundedSender<frontend::Message>,
     /// backend messages to be proxied to subscriptions
     backend_stream: SplitStream<tcp::Connection<backend::Codec>>,
+    /// cached startup messages from connection creation
+    startup_messages: Vec<backend::Message>,
+    /// set of prepared statements on this connection for routing of dependent messages
+    prepared_statements: HashSet<String>,
 }
 
 impl Connection {
+    /// Fetch the startup messages associated with the connection
+    pub async fn startup_messages(
+        &mut self,
+    ) -> Result<impl Iterator<Item = backend::Message>, Error> {
+        if self.startup_messages.is_empty() {
+            self.startup_messages = Transaction::new(&mut self.backend_stream)
+                .try_collect()
+                .await?;
+        }
+
+        let messages = self.startup_messages.clone().into_iter();
+
+        Ok(messages)
+    }
+
     /// Subscribe to backend messages for an entire top-level transaction
-    pub fn transaction(&mut self) -> Transaction {
-        Transaction::new(&mut self.backend_stream)
+    pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
+        // lazily update the startup message cache on first interaction
+        if self.startup_messages.is_empty() {
+            self.startup_messages = Transaction::new(&mut self.backend_stream)
+                .try_collect()
+                .await?;
+        }
+
+        Ok(Transaction::new(&mut self.backend_stream))
     }
 
     /// Check if a Connection has a prepared statement
@@ -66,6 +90,7 @@ impl From<tcp::Connection<backend::Codec>> for Connection {
         });
 
         Self {
+            startup_messages: Vec::new(),
             prepared_statements: HashSet::new(),
             frontend_sink,
             backend_stream,

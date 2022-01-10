@@ -1,5 +1,5 @@
 use crate::{connection::Connection, endpoint::Endpoint, protocol::backend, tcp};
-use crossbeam_queue::SegQueue;
+use parking_lot::Mutex;
 use std::{
     fmt,
     ops::{Deref, DerefMut},
@@ -12,7 +12,7 @@ pub struct Pool {
     endpoint: Endpoint,
 
     /// All pooled connections
-    connections: SegQueue<Connection>,
+    connections: Mutex<Vec<Connection>>,
 }
 
 impl Pool {
@@ -20,25 +20,30 @@ impl Pool {
     pub fn new(endpoint: Endpoint) -> Self {
         Self {
             endpoint,
-            connections: SegQueue::new(),
+            connections: Mutex::new(Vec::new()),
         }
     }
 
-    /// Fetch an existing idle connection from the pool or initialize a new one
+    /// Fetch an existing idle connection from the pool (LIFO) or initialize a new one
     #[tracing::instrument]
     pub async fn get(&self) -> Result<PooledConnection<'_>, tcp::Error> {
+        let mut connections = self.connections.lock();
+
         tracing::debug!(
-            connections = self.connections.len(),
+            connections = connections.len(),
             "Fetching Connection from the Pool"
         );
 
-        let connection = match self.connections.pop() {
+        let connection = match connections.pop() {
             Some(connection) => connection,
             None => {
+                drop(connections);
+
                 let address = self.endpoint.address();
 
                 tracing::info!("Adding Connection for Endpoint");
 
+                // create a database connection from a TCP connection
                 tcp::Connection::<backend::Codec>::connect(
                     address,
                     self.endpoint.user.to_string(),
@@ -61,13 +66,18 @@ impl Pool {
     // to search for connections using any prepared statement (but only if it's fast for
     // reasonable numbers of connections)
     pub fn get_by_statement(&self, statement: &str) -> Option<PooledConnection<'_>> {
-        while let Some(connection) = self.connections.pop() {
-            if connection.has_prepared(statement) {
-                return Some(PooledConnection {
-                    pool: self,
-                    connection: Some(connection),
-                });
-            }
+        let mut connections = self.connections.lock();
+
+        if let Some(index) = connections
+            .iter()
+            .rposition(|connection| connection.has_prepared(statement))
+        {
+            let connection = connections.swap_remove(index);
+
+            return Some(PooledConnection {
+                pool: self,
+                connection: Some(connection),
+            });
         }
 
         None
@@ -79,7 +89,6 @@ impl fmt::Debug for Pool {
         formatter
             .debug_struct("Pool")
             .field("endpoint", &self.endpoint)
-            .field("connections", &self.connections.len())
             .finish()
     }
 }
@@ -107,10 +116,12 @@ impl DerefMut for PooledConnection<'_> {
 impl Drop for PooledConnection<'_> {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            self.pool.connections.push(connection);
+            let mut connections = self.pool.connections.lock();
+
+            connections.push(connection);
 
             tracing::debug!(
-                connections = self.pool.connections.len(),
+                connections = connections.len(),
                 "Connection returned to the Pool"
             );
         }

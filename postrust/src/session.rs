@@ -169,7 +169,7 @@ impl Session {
         // flush the cluster's startup messages on session init
         let (backend_messages, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        for message in cluster.startup_messages() {
+        for message in cluster.leader().await?.startup_messages().await? {
             backend_messages.send(message).map_err(|_| Error::Flush)?;
         }
 
@@ -327,7 +327,7 @@ impl InnerSession {
 
         // proxy backend messages back to the frontend for the duration of the transaction
         // FIXME: keep track of in-progress transactions where appropriate
-        let mut backend_messages = connection.transaction();
+        let mut backend_messages = connection.transaction().await?;
 
         while let Some(message) = backend_messages.try_next().await? {
             self.backend_messages

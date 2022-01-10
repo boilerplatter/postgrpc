@@ -9,3 +9,6 @@ members = [
   "postguard",
   "postrust"
 ]
+
+[profile.release]
+debug = true
