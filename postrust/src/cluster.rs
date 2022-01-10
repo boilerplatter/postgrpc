@@ -1,7 +1,8 @@
 use crate::{
-    connections::{self, Connection},
-    endpoint::{self, Endpoint, ProxiedConnections, RoundRobinEndpoints},
+    endpoint::{Endpoint, Endpoints},
+    pool::{self, Pool},
     protocol::backend,
+    tcp,
 };
 use futures_util::TryStreamExt;
 use once_cell::sync::Lazy;
@@ -12,10 +13,8 @@ use tokio::sync::RwLock;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Connection(#[from] connections::Error),
-    #[error(transparent)]
-    Endpoint(#[from] endpoint::Error),
-    #[error("Cluster onfiguration for the current user is missing a leader")]
+    Tcp(#[from] tcp::Error),
+    #[error("Cluster configuration for the current user is missing a leader")]
     MissingLeader,
 }
 
@@ -29,9 +28,8 @@ type Key = (Vec<Endpoint>, Vec<Endpoint>);
 /// Wrapper around the cluster connections for a single auth response
 pub struct Cluster {
     startup_messages: Vec<backend::Message>,
-    pub leaders: RoundRobinEndpoints,
-    #[allow(unused)]
-    pub followers: RoundRobinEndpoints,
+    leaders: Endpoints,
+    followers: Endpoints,
 }
 
 impl Cluster {
@@ -45,40 +43,25 @@ impl Cluster {
             return Err(Error::MissingLeader);
         }
 
-        // connect to the first leader
+        // create the primary leader pool
         let leader = leaders.swap_remove(0);
-        let upstream_address = leader.address();
-
-        let proxied_connection = Connection::<backend::Codec>::connect(
-            upstream_address,
-            leader.user.to_string(),
-            leader.password.to_string(),
-            leader.database.to_string(),
-        )
-        .await?;
+        let leader_pool = Pool::new(leader);
 
         // drain the startup messages from the leader
-        let proxied_leader_connections = ProxiedConnections::new(leader, [proxied_connection]);
-
-        let (_, backend_messages) = proxied_leader_connections.subscribe_next_idle().await?;
-
-        let startup_messages = backend_messages.try_collect().await?;
+        let mut leader = leader_pool.get().await?;
+        let startup_messages = leader.transaction().try_collect().await?;
+        drop(leader);
 
         // store the endpoints and connections for later use
-        let proxied_leaders = RoundRobinEndpoints::new(
+        let proxied_leaders = Endpoints::new(
             leaders
                 .into_iter()
-                .map(|leader| ProxiedConnections::new(leader, []))
-                .chain(std::iter::once(proxied_leader_connections))
+                .map(Pool::new)
+                .chain(std::iter::once(leader_pool))
                 .collect(),
         );
 
-        let proxied_followers = RoundRobinEndpoints::new(
-            followers
-                .into_iter()
-                .map(|follower| ProxiedConnections::new(follower, []))
-                .collect(),
-        );
+        let proxied_followers = Endpoints::new(followers.into_iter().map(Pool::new).collect());
 
         Ok(Self {
             startup_messages,
@@ -90,5 +73,25 @@ impl Cluster {
     /// Get the startup messages for this cluster
     pub fn startup_messages(&self) -> Vec<backend::Message> {
         self.startup_messages.clone()
+    }
+
+    /// Fetch a single leader connection
+    pub async fn leader(&self) -> Result<pool::PooledConnection<'_>, Error> {
+        let connections = self.leaders.next().ok_or(Error::MissingLeader)?;
+        let connection = connections.get().await?;
+
+        Ok(connection)
+    }
+
+    /// Fetch a single follower connection, falling back to the leader if no followers have been configured
+    pub async fn follower(&self) -> Result<pool::PooledConnection<'_>, Error> {
+        match self.followers.next() {
+            Some(connections) => {
+                let connection = connections.get().await?;
+
+                Ok(connection)
+            }
+            None => self.leader().await,
+        }
     }
 }

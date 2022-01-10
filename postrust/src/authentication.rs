@@ -1,10 +1,10 @@
 use crate::{
-    connections::{self, Connection},
     endpoint::Endpoint,
     protocol::{
         backend,
         frontend::{self, SASLInitialResponseBody, SASLResponseBody},
     },
+    tcp::{self, Connection},
 };
 use futures_util::{SinkExt, TryStreamExt};
 use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
@@ -14,7 +14,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Connection(#[from] connections::Error),
+    Tcp(#[from] tcp::Error),
     #[error("Connection attempt failed authorization step")]
     Unauthorized,
 }

@@ -1,10 +1,10 @@
 use crate::{
     authentication::ClusterConfiguration,
     cluster::{self, Cluster, CLUSTERS},
-    connections::{self, Connection},
+    connection,
     credentials::{self, Credentials},
-    endpoint::{self, ProxiedConnections},
     protocol::{backend, frontend, startup},
+    tcp,
 };
 use futures_util::{future, stream::SplitStream, SinkExt, StreamExt, TryStreamExt};
 use postguard::Guard;
@@ -20,15 +20,13 @@ pub enum Error {
     #[error(transparent)]
     Cluster(#[from] cluster::Error),
     #[error(transparent)]
+    Connection(#[from] connection::Error),
+    #[error(transparent)]
     Credentials(#[from] credentials::Error),
     #[error(transparent)]
-    Connection(#[from] connections::Error),
-    #[error(transparent)]
-    Endpoint(#[from] endpoint::Error),
+    Tcp(#[from] tcp::Error),
     #[error("Error flushing startup messages on session init")]
     Flush,
-    #[error("Cluster configuration for the current user is missing a leader")]
-    MissingLeader,
     #[error("Connection attempt failed authorization step")]
     Unauthorized,
     #[error("Message type not yet supported")]
@@ -42,13 +40,13 @@ pub enum Error {
 /// User session wrapper that brokers messages between user connections and clusters
 pub struct Session {
     inner: InnerSession,
-    frontend_messages: SplitStream<Connection<frontend::Codec>>,
+    frontend_messages: SplitStream<tcp::Connection<frontend::Codec>>,
 }
 
 impl Session {
     /// Create a new session
     #[tracing::instrument]
-    pub async fn new(mut connection: Connection<startup::Codec>) -> Result<Self, Error> {
+    pub async fn new(mut connection: tcp::Connection<startup::Codec>) -> Result<Self, Error> {
         tracing::debug!("Retrieving Session for Connection");
 
         // get the remote address for logging
@@ -95,7 +93,7 @@ impl Session {
         }
 
         // handle the password verification and client-side auth phase
-        let mut connection = Connection::<frontend::Codec>::from(connection);
+        let mut connection = tcp::Connection::<frontend::Codec>::from(connection);
 
         let ClusterConfiguration {
             leaders,
@@ -206,7 +204,7 @@ impl Session {
         let session = self.inner;
 
         self.frontend_messages
-            .map_err(Error::Connection)
+            .map_err(Error::Tcp)
             .try_take_while(|message| match message {
                 frontend::Message::Terminate => {
                     tracing::info!("Session terminated by user");
@@ -228,6 +226,10 @@ impl Session {
                 match message {
                     frontend::Message::Bind(body) => {
                         tracing::debug!(body = ?body, "Bind message received");
+                        session.route(body).await?;
+                    }
+                    frontend::Message::Close(body) => {
+                        tracing::debug!(body = ?body, "Close message received");
                         session.route(body).await?;
                     }
                     frontend::Message::Execute(body) => {
@@ -306,26 +308,34 @@ impl InnerSession {
         }
     }
 
-    /// Route a single frontend message to the correct proxied connection
+    /// Route a single frontend message body to the correct proxied connection
+    // FIXME: handle routing logic in a dedicated Router struct
     #[tracing::instrument(skip(self))]
     async fn route<P>(&self, payload: P) -> Result<(), Error>
     where
         P: Routable + fmt::Debug + Into<frontend::Message>,
     {
-        // FIXME: fix dropped-message bugs when connections are cleaned up
-
-        if payload.is_read_only() {
-            self.follower().await?
+        // route to the proper connection based on the payload
+        let mut connection = if payload.is_read_only() {
+            self.cluster.follower().await?
         } else {
-            self.leader().await?
-        }
-        .send(payload.into())
-        .map_err(|_| Error::Sync)?;
+            self.cluster.leader().await?
+        };
 
-        // TODO: model the session message-handling lifecycle
-        // - each transaction gets its own proxied connection to a particular endpoint
-        // - each frontend message is piped to a transaction in its own async task/context
-        // (i.e. without blocking other messages)
+        // send the payload to the connection
+        connection.send(payload.into()).await?;
+
+        // proxy backend messages back to the frontend for the duration of the transaction
+        // FIXME: keep track of in-progress transactions where appropriate
+        let mut backend_messages = connection.transaction();
+
+        while let Some(message) = backend_messages.try_next().await? {
+            self.backend_messages
+                .send(message)
+                .map_err(|_| Error::Sync)?;
+        }
+
+        // TODO: handle prepared statements in extended query protocol
         // - track Parse messages (and their underlying connections) by their name, fingerprint,
         // and reference count (dropping those Parse entries when there are no more clients
         // actively referencing them) in Cluster
@@ -338,44 +348,6 @@ impl InnerSession {
         // - route Execute messages to proxied connections by portal name
 
         Ok(())
-    }
-
-    /// Return an exclusive handle to a single leader connection
-    async fn leader(&self) -> Result<UnboundedSender<frontend::Message>, Error> {
-        let connections = &self.cluster.leaders.next().ok_or(Error::MissingLeader)?;
-
-        self.proxy_connections(connections).await
-    }
-
-    /// Return an exclusive handle to a single follower connection
-    async fn follower(&self) -> Result<UnboundedSender<frontend::Message>, Error> {
-        let connections = &self.cluster.followers.next().ok_or(Error::MissingLeader)?;
-
-        self.proxy_connections(connections).await
-    }
-
-    /// Broker messages between a channel and the next idle connection
-    async fn proxy_connections(
-        &self,
-        connections: &ProxiedConnections,
-    ) -> Result<UnboundedSender<frontend::Message>, Error> {
-        // initialize a connection and subscribe to its messages
-        let (frontend_messages, mut backend_messages) = connections.subscribe_next_idle().await?;
-
-        // forward backend messages back to the clients
-        tokio::spawn({
-            let transmitter = self.backend_messages.clone();
-
-            async move {
-                while let Some(message) = backend_messages.try_next().await? {
-                    transmitter.send(message).map_err(|_| Error::Sync)?;
-                }
-
-                Ok::<_, Error>(())
-            }
-        });
-
-        Ok(frontend_messages)
     }
 }
 
@@ -390,6 +362,7 @@ trait Routable {
 }
 
 impl Routable for frontend::BindBody {}
+impl Routable for frontend::CloseBody {}
 impl Routable for frontend::DescribeBody {}
 impl Routable for frontend::ExecuteBody {}
 impl Routable for frontend::QueryBody {}

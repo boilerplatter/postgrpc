@@ -1,31 +1,34 @@
 #![deny(unused_crate_dependencies)]
 use configuration::Configuration;
-use connections::Connections;
 use futures_util::{StreamExt, TryStreamExt};
 use session::Session;
 use std::net::SocketAddr;
+use tcp::Connections;
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
 mod authentication;
 mod cluster;
 mod configuration;
-mod connections;
+mod connection;
 mod credentials;
 mod endpoint;
+mod pool;
 mod protocol;
 mod session;
+mod tcp;
+mod transaction;
 
 #[derive(Debug, Error)]
 enum Error {
     #[error("Error reading configuration from environment: {0}")]
     Configuration(#[from] envy::Error),
     #[error(transparent)]
-    Connection(#[from] connections::Error),
-    #[error(transparent)]
     Session(#[from] session::Error),
     #[error("Error setting up SIGTERM handler: {0}")]
     SigTerm(#[from] std::io::Error),
+    #[error(transparent)]
+    Tcp(#[from] tcp::Error),
 }
 
 /// Arch Component Overview
@@ -82,7 +85,7 @@ async fn run_service() -> Result<(), Error> {
     // proxy new connections to user sessions
     Connections::new(address)
         .await?
-        .map_err(session::Error::Connection)
+        .map_err(session::Error::Tcp)
         .and_then(Session::new)
         .take_until(shutdown)
         .for_each_concurrent(None, |session| async move {

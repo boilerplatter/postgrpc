@@ -8,8 +8,9 @@ use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Byte tags for relevant frontend message variants
-const DESCRIBE_TAG: u8 = b'D';
 const BIND_TAG: u8 = b'B';
+const CLOSE_TAG: u8 = b'C';
+const DESCRIBE_TAG: u8 = b'D';
 const EXECUTE_TAG: u8 = b'E';
 const PASSWORD_MESSAGE_TAG: u8 = b'p';
 const PARSE_TAG: u8 = b'F';
@@ -19,16 +20,25 @@ const TERMINATE_TAG: u8 = b'X';
 /// Post-startup Postgres frontend message variants that Postrust cares about
 #[derive(Debug, Clone)]
 pub enum Message {
+    // TODO:
+    // CancelRequest
+    // CopyData
+    // CopyDone
+    // CopyFail
+    // Flush
+    // FunctionCall
+    // Sync
     SASLInitialResponse(SASLInitialResponseBody),
     SASLResponse(SASLResponseBody),
     Bind(BindBody),
+    Close(CloseBody),
+    Describe(DescribeBody),
     Execute(ExecuteBody),
     Parse(ParseBody),
-    Describe(DescribeBody),
     PasswordMessage(PasswordMessageBody),
     Query(QueryBody),
     Terminate,
-    // catchall for frames we don't care about
+    // catchall for frames we don't care about (usually an error)
     Forward(Bytes),
 }
 
@@ -123,6 +133,40 @@ impl Message {
                     column_format_codes,
                 })
             }
+            CLOSE_TAG => {
+                let variant = buf.read_u8()?;
+                let name = buf.read_cstr()?;
+
+                let body = match variant {
+                    b'P' => CloseBody::Portal { name },
+                    b'S' => CloseBody::Statement { name },
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid close format: only statement or portal names supported",
+                        ));
+                    }
+                };
+
+                Message::Close(body)
+            }
+            DESCRIBE_TAG => {
+                let variant = buf.read_u8()?;
+                let name = buf.read_cstr()?;
+
+                let body = match variant {
+                    b'P' => DescribeBody::Portal { name },
+                    b'S' => DescribeBody::Statement { name },
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid describe format: only statement or portal names supported",
+                        ));
+                    }
+                };
+
+                Message::Describe(body)
+            }
             EXECUTE_TAG => {
                 let portal = buf.read_cstr()?;
                 let max_rows = buf.read_i32::<BigEndian>()?;
@@ -152,23 +196,6 @@ impl Message {
                     query,
                     parameter_types,
                 })
-            }
-            DESCRIBE_TAG => {
-                let variant = buf.read_u8()?;
-                let name = buf.read_cstr()?;
-
-                let body = match variant {
-                    b'P' => DescribeBody::Portal { name },
-                    b'S' => DescribeBody::Statement { name },
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "invalid describe format: only statement or portal names supported",
-                        ));
-                    }
-                };
-
-                Message::Describe(body)
             }
             QUERY_TAG => {
                 let query = buf.read_cstr()?;
@@ -212,19 +239,6 @@ impl Message {
                 bytes.put_u8(PASSWORD_MESSAGE_TAG);
                 bytes.put_i32(4 + (data.len() as i32));
                 bytes.put_slice(&data);
-            }
-            Self::Describe(body) => {
-                bytes.put_u8(DESCRIBE_TAG);
-
-                let (name, variant) = match body {
-                    DescribeBody::Portal { name } => (name, b'P'),
-                    DescribeBody::Statement { name } => (name, b'S'),
-                };
-
-                bytes.put_i32(4 + 4 + (name.len() as i32) + 1);
-                bytes.put_u8(variant);
-                bytes.put_slice(&name);
-                bytes.put_u8(0);
             }
             Self::Bind(BindBody {
                 portal,
@@ -277,6 +291,32 @@ impl Message {
                 for format_code in column_format_codes {
                     bytes.put_i16(format_code);
                 }
+            }
+            Self::Close(body) => {
+                bytes.put_u8(CLOSE_TAG);
+
+                let (name, variant) = match body {
+                    CloseBody::Portal { name } => (name, b'P'),
+                    CloseBody::Statement { name } => (name, b'S'),
+                };
+
+                bytes.put_i32(4 + 4 + (name.len() as i32) + 1);
+                bytes.put_u8(variant);
+                bytes.put_slice(&name);
+                bytes.put_u8(0);
+            }
+            Self::Describe(body) => {
+                bytes.put_u8(DESCRIBE_TAG);
+
+                let (name, variant) = match body {
+                    DescribeBody::Portal { name } => (name, b'P'),
+                    DescribeBody::Statement { name } => (name, b'S'),
+                };
+
+                bytes.put_i32(4 + 4 + (name.len() as i32) + 1);
+                bytes.put_u8(variant);
+                bytes.put_slice(&name);
+                bytes.put_u8(0);
             }
             Self::Execute(ExecuteBody { portal, max_rows }) => {
                 bytes.put_u8(EXECUTE_TAG);
@@ -344,9 +384,21 @@ pub struct BindBody {
     column_format_codes: Vec<i16>,
 }
 
-impl Into<Message> for BindBody {
-    fn into(self) -> Message {
-        Message::Bind(self)
+impl From<BindBody> for Message {
+    fn from(body: BindBody) -> Self {
+        Self::Bind(body)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum CloseBody {
+    Portal { name: Bytes },
+    Statement { name: Bytes },
+}
+
+impl From<CloseBody> for Message {
+    fn from(body: CloseBody) -> Self {
+        Self::Close(body)
     }
 }
 
@@ -356,9 +408,9 @@ pub struct ExecuteBody {
     max_rows: i32,
 }
 
-impl Into<Message> for ExecuteBody {
-    fn into(self) -> Message {
-        Message::Execute(self)
+impl From<ExecuteBody> for Message {
+    fn from(body: ExecuteBody) -> Self {
+        Self::Execute(body)
     }
 }
 
@@ -368,9 +420,9 @@ pub enum DescribeBody {
     Statement { name: Bytes },
 }
 
-impl Into<Message> for DescribeBody {
-    fn into(self) -> Message {
-        Message::Describe(self)
+impl From<DescribeBody> for Message {
+    fn from(body: DescribeBody) -> Self {
+        Self::Describe(body)
     }
 }
 
@@ -388,9 +440,9 @@ impl ParseBody {
     }
 }
 
-impl Into<Message> for ParseBody {
-    fn into(self) -> Message {
-        Message::Parse(self)
+impl From<ParseBody> for Message {
+    fn from(body: ParseBody) -> Self {
+        Self::Parse(body)
     }
 }
 
@@ -417,9 +469,9 @@ impl QueryBody {
     }
 }
 
-impl Into<Message> for QueryBody {
-    fn into(self) -> Message {
-        Message::Query(self)
+impl From<QueryBody> for Message {
+    fn from(body: QueryBody) -> Self {
+        Self::Query(body)
     }
 }
 
