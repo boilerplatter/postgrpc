@@ -8,6 +8,7 @@ use std::{
     collections::HashSet,
     pin::Pin,
     task::{Context, Poll},
+    time::Instant,
 };
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
@@ -29,6 +30,8 @@ pub struct Connection {
     startup_messages: Vec<backend::Message>,
     /// set of prepared statements on this connection for routing of dependent messages
     prepared_statements: HashSet<String>,
+    /// last known use of the connection, tracked for garbage collection purposes
+    last_used: Instant,
 }
 
 impl Connection {
@@ -45,6 +48,16 @@ impl Connection {
         let messages = self.startup_messages.clone().into_iter();
 
         Ok(messages)
+    }
+
+    /// Fetch the Instant when the Connection was last used
+    pub fn last_used(&self) -> Instant {
+        self.last_used
+    }
+
+    /// Update the tracked last use of the Connection
+    pub fn update_last_used(&mut self) {
+        self.last_used = Instant::now()
     }
 
     /// Subscribe to backend messages for an entire top-level transaction
@@ -83,17 +96,18 @@ impl From<tcp::Connection<backend::Codec>> for Connection {
                 }
             }
 
-            tracing::warn!(
+            tracing::debug!(
                 remote_address = %remote_address,
-                "Closing proxied connection due to disconnection"
+                "Closing proxied connection"
             );
         });
 
         Self {
-            startup_messages: Vec::new(),
-            prepared_statements: HashSet::new(),
             frontend_sink,
             backend_stream,
+            startup_messages: Vec::new(),
+            prepared_statements: HashSet::new(),
+            last_used: Instant::now(),
         }
     }
 }

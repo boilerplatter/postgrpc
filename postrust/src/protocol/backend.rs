@@ -2,7 +2,7 @@
 use super::{buffer::Buffer, frontend};
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{BufMut, Bytes, BytesMut};
-use std::io;
+use std::io::{self, Read};
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Byte tags for relevant backend message variants and fields
@@ -14,6 +14,7 @@ const ERROR_CODE_TAG: u8 = b'C';
 const PARAMETER_STATUS_TAG: u8 = b'S';
 const READY_FOR_QUERY_TAG: u8 = b'Z';
 const SSL_NOT_SUPPORTED_TAG: u8 = b'N';
+const DATA_ROW_TAG: u8 = b'D';
 
 /// Postgres backend message variants that Postrust cares about
 // FIXME: align with frontend message format style
@@ -33,6 +34,9 @@ pub enum Message {
     },
     AuthenenticationCleartextPassword,
     AuthenticationOk,
+    DataRow {
+        columns: Vec<Option<Bytes>>,
+    },
     ErrorResponse {
         severity: Severity,
         message: Bytes,
@@ -131,6 +135,27 @@ impl Message {
 
                 Message::ReadyForQuery { transaction_status }
             }
+            DATA_ROW_TAG => {
+                let columns_length = buf.read_u16::<BigEndian>()?;
+                let mut columns = Vec::with_capacity(columns_length as usize);
+
+                for _ in 0..columns_length {
+                    let column_length = buf.read_i32::<BigEndian>()?;
+
+                    if column_length == -1 {
+                        columns.push(None)
+                    } else {
+                        let mut column = vec![0u8; column_length as usize];
+                        buf.read_exact(&mut column)?;
+
+                        tracing::trace!(column = ?&column, "New column read from buffer");
+
+                        columns.push(Some(column.into()));
+                    }
+                }
+
+                Message::DataRow { columns }
+            }
             _ => Message::Forward(buf.bytes),
         };
 
@@ -227,6 +252,32 @@ impl Message {
             Self::SslResponse => {
                 // TODO: handle responses other than "not supported" here
                 bytes.put_u8(SSL_NOT_SUPPORTED_TAG);
+            }
+            Self::DataRow { columns } => {
+                let columns_count = columns.len() as i16;
+                let columns_length = columns.iter().fold(0, |mut length, column| {
+                    length += 4;
+
+                    if let Some(column) = column {
+                        length += column.len();
+                    }
+
+                    length
+                }) as i32;
+
+                bytes.put_u8(DATA_ROW_TAG);
+                bytes.put_i32(4 + 2 + columns_length);
+                bytes.put_i16(columns_count);
+
+                for column in columns {
+                    match column {
+                        Some(column) => {
+                            bytes.put_i32(column.len() as i32);
+                            bytes.put_slice(&column);
+                        }
+                        None => bytes.put_i32(-1),
+                    }
+                }
             }
             Self::Forward(frame) => {
                 bytes.put_slice(&frame);

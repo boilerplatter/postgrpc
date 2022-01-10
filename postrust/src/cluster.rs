@@ -1,8 +1,8 @@
 use crate::{
     endpoint::{Endpoint, Endpoints},
     pool::{self, Pool},
-    tcp,
 };
+use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Tcp(#[from] tcp::Error),
+    Pool(#[from] pool::Error),
     #[error("Cluster configuration for the current user is missing a leader")]
     MissingLeader,
 }
@@ -38,8 +38,23 @@ impl Cluster {
         }
 
         // store the endpoints and connections for later use
-        let proxied_leaders = Endpoints::new(leaders.into_iter().map(Pool::new).collect());
-        let proxied_followers = Endpoints::new(followers.into_iter().map(Pool::new).collect());
+        let proxied_leaders = Endpoints::new(
+            leaders
+                .into_iter()
+                .map(Pool::new)
+                .collect::<FuturesUnordered<_>>()
+                .try_collect()
+                .await?,
+        );
+
+        let proxied_followers = Endpoints::new(
+            followers
+                .into_iter()
+                .map(Pool::new)
+                .collect::<FuturesUnordered<_>>()
+                .try_collect()
+                .await?,
+        );
 
         Ok(Self {
             leaders: proxied_leaders,
