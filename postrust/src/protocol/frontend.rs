@@ -4,6 +4,7 @@
 use super::{backend, buffer::Buffer};
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{BufMut, Bytes, BytesMut};
+use postguard::Guard;
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -16,6 +17,7 @@ const PASSWORD_MESSAGE_TAG: u8 = b'p';
 const PARSE_TAG: u8 = b'F';
 const QUERY_TAG: u8 = b'Q';
 const TERMINATE_TAG: u8 = b'X';
+const SYNC_TAG: u8 = b'S';
 
 /// Post-startup Postgres frontend message variants that Postrust cares about
 #[derive(Debug, Clone)]
@@ -27,7 +29,6 @@ pub enum Message {
     // CopyFail
     // Flush
     // FunctionCall
-    // Sync
     SASLInitialResponse(SASLInitialResponseBody),
     SASLResponse(SASLResponseBody),
     Bind(BindBody),
@@ -40,6 +41,8 @@ pub enum Message {
     Terminate,
     // catchall for frames we don't care about (usually an error)
     Forward(Bytes),
+    #[allow(dead_code)]
+    Sync, // this is not actually dead
 }
 
 impl Message {
@@ -104,8 +107,7 @@ impl Message {
                             )
                         })?;
 
-                    let mut parameter = Vec::with_capacity(parameter_length);
-                    unsafe { parameter.set_len(parameter_length) };
+                    let mut parameter = vec![0; parameter_length];
                     std::io::Read::read(&mut buf, &mut parameter)?;
                     parameters.push(parameter.into());
                 }
@@ -359,6 +361,35 @@ impl Message {
                 bytes.put_u8(TERMINATE_TAG);
                 bytes.put_i32(4);
             }
+            Self::Sync => {
+                bytes.put_u8(SYNC_TAG);
+                bytes.put_i32(4);
+            }
+        }
+    }
+
+    /// Routing hook to determine if the frontend message can be safely sent to a follower
+    pub fn is_read_only(&self) -> bool {
+        false // TODO
+    }
+
+    /// Routing hook to see if a message passes a Postrust statement guard
+    // FIXME: see if we can avoid the to_string() call
+    pub fn guard(&self, guard: &Guard) -> Result<Option<String>, postguard::Error> {
+        match self {
+            Self::Parse(body) => {
+                let query = body.query();
+                let statement = String::from_utf8_lossy(&query);
+                guard.guard(&statement)?;
+                Ok(Some(statement.to_string()))
+            }
+            Self::Query(body) => {
+                let query = body.query();
+                let statement = String::from_utf8_lossy(&query);
+                guard.guard(&statement)?;
+                Ok(Some(statement.to_string()))
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -382,6 +413,17 @@ pub struct BindBody {
     parameter_format_codes: Vec<i16>,
     parameters: Vec<Bytes>,
     column_format_codes: Vec<i16>,
+}
+
+impl BindBody {
+    #[inline]
+    pub fn statement(&self) -> Bytes {
+        self.statement.slice(..)
+    }
+
+    pub fn set_statement(&mut self, statement: Bytes) {
+        self.statement = statement;
+    }
 }
 
 impl From<BindBody> for Message {
@@ -435,8 +477,18 @@ pub struct ParseBody {
 
 impl ParseBody {
     #[inline]
+    pub fn name(&self) -> Bytes {
+        self.name.slice(..)
+    }
+
+    #[inline]
     pub fn query(&self) -> Bytes {
         self.query.slice(..)
+    }
+
+    #[inline]
+    pub fn parameter_types(&self) -> &[i32] {
+        &self.parameter_types
     }
 }
 

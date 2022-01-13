@@ -30,12 +30,8 @@ version = "1.0.130"
 
 [dependencies.tokio]
 default-features = false
-features = ["net", "macros", "rt-multi-thread", "signal", "io-util", "parking_lot"]
+features = ["net", "macros", "rt-multi-thread", "signal", "io-util", "parking_lot", "time"]
 version = "1.14.0"
-
-[dependencies.tokio-stream]
-features = ["sync"]
-version = "0.1.8"
 
 [dependencies.tokio-util]
 features = ["codec"]

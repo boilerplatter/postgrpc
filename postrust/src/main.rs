@@ -15,6 +15,7 @@ mod credentials;
 mod endpoint;
 mod pool;
 mod protocol;
+mod router;
 mod session;
 mod tcp;
 mod transaction;
@@ -56,7 +57,7 @@ enum Error {
 ///
 /// FIXME:
 /// 1. add some criterion-based benchmarks/flamegraphs
-/// 2. tackle bottlenecks in the proxy layer (probably in tokio channels or RwLocks)
+/// 2. tackle bottlenecks in the proxy layer (probably in the Pool)
 
 /// Run the proxy in a Result-contained function
 async fn run_service() -> Result<(), Error> {

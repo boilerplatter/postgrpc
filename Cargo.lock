@@ -1176,7 +1176,6 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.2",
@@ -1739,7 +1738,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

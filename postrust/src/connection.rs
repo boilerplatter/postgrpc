@@ -3,6 +3,8 @@ use crate::{
     tcp,
     transaction::Transaction,
 };
+use bytes::Bytes;
+use futures_core::Stream;
 use futures_util::{stream::SplitStream, Sink, SinkExt, StreamExt, TryStreamExt};
 use std::{
     collections::HashSet,
@@ -20,18 +22,17 @@ pub enum Error {
     #[error(transparent)]
     Tcp(#[from] tcp::Error),
 }
-/// Proxied database connection for use with the Pool
-pub struct Connection {
-    /// sink for clients to send frontend messages
-    frontend_sink: UnboundedSender<frontend::Message>,
-    /// backend messages to be proxied to subscriptions
-    backend_stream: SplitStream<tcp::Connection<backend::Codec>>,
-    /// cached startup messages from connection creation
-    startup_messages: Vec<backend::Message>,
-    /// set of prepared statements on this connection for routing of dependent messages
-    prepared_statements: HashSet<String>,
-    /// last known use of the connection, tracked for garbage collection purposes
-    last_used: Instant,
+
+pin_project_lite::pin_project! {
+    /// Proxied database connection for use with the Pool
+    pub struct Connection {
+        frontend_sink: UnboundedSender<frontend::Message>,
+        startup_messages: Vec<backend::Message>,
+        prepared_statements: HashSet<Bytes>,
+        last_used: Instant,
+        #[pin]
+        backend_stream: SplitStream<tcp::Connection<backend::Codec>>,
+    }
 }
 
 impl Connection {
@@ -70,11 +71,6 @@ impl Connection {
         }
 
         Ok(Transaction::new(&mut self.backend_stream))
-    }
-
-    /// Check if a Connection has a prepared statement
-    pub fn has_prepared(&self, statement: &str) -> bool {
-        self.prepared_statements.get(statement).is_some()
     }
 }
 
@@ -119,7 +115,19 @@ impl Sink<frontend::Message> for Connection {
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(self: Pin<&mut Self>, item: frontend::Message) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: frontend::Message) -> Result<(), Self::Error> {
+        // FIXME: handle Query with "prepare" commands, too
+        // should this be a part of the Sink implementation, or something that can be tested from
+        // the caller's perspective?
+        if let frontend::Message::Parse(ref body) = &item {
+            let is_first_insert = self.prepared_statements.insert(body.name());
+
+            // skip forwarding Parse messages after the first time
+            if !is_first_insert {
+                return Ok(());
+            }
+        }
+
         self.frontend_sink.send(item).map_err(|_| Error::Sync)
     }
 
@@ -129,5 +137,13 @@ impl Sink<frontend::Message> for Connection {
 
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+impl Stream for Connection {
+    type Item = Result<backend::Message, tcp::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.project().backend_stream.poll_next(context)
     }
 }

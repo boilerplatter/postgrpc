@@ -14,11 +14,11 @@ use std::{
     num::ParseIntError,
     ops::{Deref, DerefMut},
     str::Utf8Error,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use tokio::sync::{AcquireError, Semaphore, SemaphorePermit};
+use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -53,7 +53,7 @@ pub struct Pool {
     connections: Arc<Mutex<Vec<Connection>>>,
 
     /// Permit system for making sure that the pool does not exceed its connection capacity
-    permits: Semaphore,
+    permits: Arc<Semaphore>,
 }
 
 impl Pool {
@@ -71,6 +71,9 @@ impl Pool {
         .map(Connection::from)?;
 
         // get the MAX_CONNECTIONS for this endpoint, if possible
+        // FIXME: handle this more dynamically in response to connections from other sources,
+        // e.g. gracefully handle "too many clients" errors from the backend when establishing new
+        // connections (which would mean no more Semaphore required)
         let mut max_connections: Option<usize> = None;
 
         connection
@@ -129,14 +132,14 @@ impl Pool {
         Ok(Self {
             endpoint,
             connections,
-            permits: Semaphore::new(capacity),
+            permits: Arc::new(Semaphore::new(capacity)),
         })
     }
 
     /// Fetch an existing idle connection from the pool (LIFO) or initialize a new one
     #[tracing::instrument]
-    pub async fn get(&self) -> Result<PooledConnection<'_>, Error> {
-        let permit = self.permits.acquire().await?;
+    pub async fn get(&self) -> Result<PooledConnection, Error> {
+        let permit = self.permits.clone().acquire_owned().await?;
         let mut connections = self.connections.lock();
 
         tracing::debug!(
@@ -167,36 +170,9 @@ impl Pool {
 
         Ok(PooledConnection {
             connection: Some(connection),
-            pool: self,
+            connections: Arc::downgrade(&self.connections),
             _permit: permit,
         })
-    }
-
-    /// Fetch the Connection associated with a prepared statement, if one exists
-    // FIXME: benchmark this. We should instead use a data structure that allows us
-    // to search for connections using any prepared statement (but only if it's fast for
-    // reasonable numbers of connections)
-    pub async fn get_by_statement(
-        &self,
-        statement: &str,
-    ) -> Result<Option<PooledConnection<'_>>, Error> {
-        let permit = self.permits.acquire().await?;
-        let mut connections = self.connections.lock();
-
-        if let Some(index) = connections
-            .iter()
-            .rposition(|connection| connection.has_prepared(statement))
-        {
-            let connection = connections.swap_remove(index);
-
-            return Ok(Some(PooledConnection {
-                connection: Some(connection),
-                pool: self,
-                _permit: permit,
-            }));
-        }
-
-        Ok(None)
     }
 }
 
@@ -210,13 +186,14 @@ impl fmt::Debug for Pool {
 }
 
 /// Wrapper around a pooled Connection for lifecycle management
-pub struct PooledConnection<'a> {
+// FIXME: avoid references here
+pub struct PooledConnection {
     connection: Option<Connection>,
-    pool: &'a Pool,
-    _permit: SemaphorePermit<'a>,
+    connections: Weak<Mutex<Vec<Connection>>>,
+    _permit: OwnedSemaphorePermit,
 }
 
-impl Deref for PooledConnection<'_> {
+impl Deref for PooledConnection {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
@@ -224,25 +201,27 @@ impl Deref for PooledConnection<'_> {
     }
 }
 
-impl DerefMut for PooledConnection<'_> {
+impl DerefMut for PooledConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.connection.as_mut().unwrap()
     }
 }
 
-impl Drop for PooledConnection<'_> {
+impl Drop for PooledConnection {
     fn drop(&mut self) {
         if let Some(mut connection) = self.connection.take() {
-            connection.update_last_used();
+            if let Some(connections) = self.connections.upgrade() {
+                connection.update_last_used();
 
-            let mut connections = self.pool.connections.lock();
+                let mut connections = connections.lock();
 
-            connections.push(connection);
+                connections.push(connection);
 
-            tracing::debug!(
-                connections = connections.len(),
-                "Connection returned to the Pool"
-            );
+                tracing::debug!(
+                    connections = connections.len(),
+                    "Connection returned to the Pool"
+                );
+            }
         }
     }
 }

@@ -8,7 +8,7 @@ use crate::{
 };
 use futures_util::{SinkExt, TryStreamExt};
 use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
-use postguard::{AllowedFunctions, AllowedStatements, Command, Guard};
+use postguard::{AllowedFunctions, AllowedStatements, Guard};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -41,7 +41,8 @@ impl Default for ClusterConfiguration {
         );
 
         let statement_guard = Guard::new(
-            AllowedStatements::List(vec![Command::Select]),
+            // AllowedStatements::List(vec![Command::Select]),
+            AllowedStatements::All,
             AllowedFunctions::List(vec!["to_json".to_string(), "pg_sleep".to_string()]),
         );
 

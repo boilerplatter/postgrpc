@@ -27,6 +27,9 @@ type Key = (Vec<Endpoint>, Vec<Endpoint>);
 pub struct Cluster {
     leaders: Endpoints,
     followers: Endpoints,
+    // TODO (extended query protocol):
+    // include prepared statement table mapping prepared statements to hashes of their contents
+    // (and provide some way of tracking/DEALLOCATEing those statements not used by an active session)
 }
 
 impl Cluster {
@@ -63,7 +66,7 @@ impl Cluster {
     }
 
     /// Fetch a single leader connection
-    pub async fn leader(&self) -> Result<pool::PooledConnection<'_>, Error> {
+    pub async fn leader(&self) -> Result<pool::PooledConnection, Error> {
         let connections = self.leaders.next().ok_or(Error::MissingLeader)?;
         let connection = connections.get().await?;
 
@@ -71,7 +74,7 @@ impl Cluster {
     }
 
     /// Fetch a single follower connection, falling back to the leader if no followers have been configured
-    pub async fn follower(&self) -> Result<pool::PooledConnection<'_>, Error> {
+    pub async fn follower(&self) -> Result<pool::PooledConnection, Error> {
         match self.followers.next() {
             Some(connections) => {
                 let connection = connections.get().await?;
