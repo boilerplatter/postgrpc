@@ -1,4 +1,5 @@
 use crate::{
+    flush::Flush,
     protocol::{backend, frontend},
     tcp,
     transaction::Transaction,
@@ -8,6 +9,7 @@ use futures_core::Stream;
 use futures_util::{stream::SplitStream, Sink, SinkExt, StreamExt, TryStreamExt};
 use std::{
     collections::HashSet,
+    fmt,
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
@@ -64,6 +66,8 @@ impl Connection {
     /// Subscribe to backend messages for an entire top-level transaction
     pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
         // lazily update the startup message cache on first interaction
+        // FIXME: do this at the stream level, if possible (not every caller uses transaction() or
+        // startup_messages() first if they're using the stream interface)
         if self.startup_messages.is_empty() {
             self.startup_messages = Transaction::new(&mut self.backend_stream)
                 .try_collect()
@@ -71,6 +75,11 @@ impl Connection {
         }
 
         Ok(Transaction::new(&mut self.backend_stream))
+    }
+
+    /// Flush the messages in the connection until the next Pending state
+    pub fn flush(&mut self) -> Flush<'_> {
+        Flush::new(&mut self.backend_stream)
     }
 }
 
@@ -145,5 +154,16 @@ impl Stream for Connection {
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.project().backend_stream.poll_next(context)
+    }
+}
+
+impl fmt::Debug for Connection {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("Connection")
+            .field("startup_messages", &self.startup_messages.len())
+            .field("prepared_statements", &self.prepared_statements.len())
+            .field("last_used", &self.last_used)
+            .finish()
     }
 }

@@ -14,10 +14,11 @@ const CLOSE_TAG: u8 = b'C';
 const DESCRIBE_TAG: u8 = b'D';
 const EXECUTE_TAG: u8 = b'E';
 const PASSWORD_MESSAGE_TAG: u8 = b'p';
-const PARSE_TAG: u8 = b'F';
+const PARSE_TAG: u8 = b'P';
 const QUERY_TAG: u8 = b'Q';
 const TERMINATE_TAG: u8 = b'X';
 const SYNC_TAG: u8 = b'S';
+const FLUSH_TAG: u8 = b'H';
 
 /// Post-startup Postgres frontend message variants that Postrust cares about
 #[derive(Debug, Clone)]
@@ -27,7 +28,6 @@ pub enum Message {
     // CopyData
     // CopyDone
     // CopyFail
-    // Flush
     // FunctionCall
     SASLInitialResponse(SASLInitialResponseBody),
     SASLResponse(SASLResponseBody),
@@ -39,10 +39,10 @@ pub enum Message {
     PasswordMessage(PasswordMessageBody),
     Query(QueryBody),
     Terminate,
+    Sync,
+    Flush,
     // catchall for frames we don't care about (usually an error)
     Forward(Bytes),
-    #[allow(dead_code)]
-    Sync, // this is not actually dead
 }
 
 impl Message {
@@ -100,7 +100,7 @@ impl Message {
 
                 for _ in 0..parameter_count {
                     let parameter_length =
-                        buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
+                        buf.read_i32::<BigEndian>()?.try_into().map_err(|_| {
                             io::Error::new(
                                 io::ErrorKind::InvalidInput,
                                 "invalid parameter length format: reading i16",
@@ -179,7 +179,7 @@ impl Message {
                 let name = buf.read_cstr()?;
                 let query = buf.read_cstr()?;
                 let parameter_length: usize =
-                    buf.read_i32::<BigEndian>()?.try_into().map_err(|_| {
+                    buf.read_i16::<BigEndian>()?.try_into().map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "invalid parameter length format: reading i32",
@@ -205,6 +205,8 @@ impl Message {
                 Message::Query(QueryBody { query })
             }
             TERMINATE_TAG => Message::Terminate,
+            FLUSH_TAG => Message::Flush,
+            SYNC_TAG => Message::Sync,
             _ => Message::Forward(buf.bytes),
         };
 
@@ -253,24 +255,25 @@ impl Message {
                 let column_format_count = column_format_codes.len() as i32;
                 let parameter_count = parameters.len() as i32;
                 let parameter_length = parameters.iter().fold(0, |mut length, parameter| {
-                    length += 1;
+                    length += 4;
                     length += parameter.len();
                     length
                 }) as i32;
 
+                let length = 4
+                    + (portal.len() as i32)
+                    + 1
+                    + (statement.len() as i32)
+                    + 1
+                    + 2
+                    + (parameter_format_count * 2)
+                    + 2
+                    + parameter_length
+                    + 2
+                    + (column_format_count * 2);
+
                 bytes.put_u8(BIND_TAG);
-                bytes.put_i32(
-                    4 + (portal.len() as i32)
-                        + 1
-                        + (statement.len() as i32)
-                        + 1
-                        + 1
-                        + parameter_format_count
-                        + 1
-                        + parameter_length
-                        + 1
-                        + column_format_count,
-                );
+                bytes.put_i32(length);
                 bytes.put_slice(&portal);
                 bytes.put_u8(0);
                 bytes.put_slice(&statement);
@@ -284,6 +287,7 @@ impl Message {
                 bytes.put_i16(parameter_count as i16);
 
                 for parameter in parameters {
+                    // FIXME: handle NULL values
                     bytes.put_i32(parameter.len() as i32);
                     bytes.put_slice(&parameter);
                 }
@@ -315,14 +319,14 @@ impl Message {
                     DescribeBody::Statement { name } => (name, b'S'),
                 };
 
-                bytes.put_i32(4 + 4 + (name.len() as i32) + 1);
+                bytes.put_i32(4 + 1 + (name.len() as i32) + 1);
                 bytes.put_u8(variant);
                 bytes.put_slice(&name);
                 bytes.put_u8(0);
             }
             Self::Execute(ExecuteBody { portal, max_rows }) => {
                 bytes.put_u8(EXECUTE_TAG);
-                bytes.put_i32(4 + (portal.len() as i32) + 1 + 1);
+                bytes.put_i32(4 + (portal.len() as i32) + 1 + 4);
                 bytes.put_slice(&portal);
                 bytes.put_u8(0);
                 bytes.put_i32(max_rows);
@@ -333,16 +337,22 @@ impl Message {
                 parameter_types,
             }) => {
                 let parameter_count = parameter_types.len() as i32;
+                let length = 4
+                    + (name.len() as i32)
+                    + 1
+                    + (query.len() as i32)
+                    + 1
+                    + 2
+                    + (parameter_count * 4);
 
                 bytes.put_u8(PARSE_TAG);
-                bytes.put_i32(
-                    4 + (name.len() as i32) + 1 + (query.len() as i32) + 1 + 1 + parameter_count,
-                );
+                bytes.put_i32(length);
                 bytes.put_slice(&name);
                 bytes.put_u8(0);
                 bytes.put_slice(&query);
                 bytes.put_u8(0);
-                bytes.put_i32(parameter_count);
+
+                bytes.put_i16(parameter_count as i16);
 
                 for type_ in parameter_types {
                     bytes.put_i32(type_);
@@ -359,6 +369,10 @@ impl Message {
             }
             Self::Terminate => {
                 bytes.put_u8(TERMINATE_TAG);
+                bytes.put_i32(4);
+            }
+            Self::Flush => {
+                bytes.put_u8(FLUSH_TAG);
                 bytes.put_i32(4);
             }
             Self::Sync => {
@@ -470,7 +484,8 @@ impl From<DescribeBody> for Message {
 
 #[derive(Debug, Clone)]
 pub struct ParseBody {
-    name: Bytes,
+    // FIXME: make fields private again
+    pub name: Bytes,
     query: Bytes,
     parameter_types: Vec<i32>,
 }

@@ -13,6 +13,7 @@ mod configuration;
 mod connection;
 mod credentials;
 mod endpoint;
+mod flush;
 mod pool;
 mod protocol;
 mod router;

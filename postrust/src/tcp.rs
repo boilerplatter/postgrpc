@@ -112,6 +112,7 @@ impl<C> fmt::Debug for Connection<C> {
 
 impl Connection<backend::Codec> {
     /// Initiate a brand new backend connection
+    #[tracing::instrument(skip(password))]
     pub async fn connect(
         address: SocketAddr,
         user: String,

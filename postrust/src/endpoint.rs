@@ -44,14 +44,14 @@ impl fmt::Debug for Endpoint {
             .field("user", &self.user)
             .field("password", &"******")
             .field("database", &self.database)
-            .field("host", &self.host)
-            .field("port", &self.port)
+            .field("address", &self.address())
             .finish()
     }
 }
 
 /// Cyclical collection of connection pools for each set of endpoints in a cluster
 /// for round-robin style load balancing between endpoints
+#[derive(Debug)]
 pub struct Endpoints {
     index: AtomicUsize,
     endpoints: Vec<Pool>,

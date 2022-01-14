@@ -46,7 +46,7 @@ const MAX_CONNECTIONS_DEFAULT: usize = 100;
 
 /// Asynchronous pool for proxied database connections
 pub struct Pool {
-    /// Shared endpoint for all Connections in the Pool
+    /// Shared endpoint configuration for all Connections in the Pool
     endpoint: Endpoint,
 
     /// All pooled connections
@@ -147,18 +147,18 @@ impl Pool {
             "Fetching Connection from the Pool"
         );
 
-        let connection = match connections.pop() {
+        let connection = connections.pop();
+
+        drop(connections);
+
+        let connection = match connection {
             Some(connection) => connection,
             None => {
-                drop(connections);
-
-                let address = self.endpoint.address();
-
                 tracing::info!("Adding Connection for Endpoint");
 
                 // create a database connection from a TCP connection
                 tcp::Connection::<backend::Codec>::connect(
-                    address,
+                    self.endpoint.address(),
                     self.endpoint.user.to_string(),
                     self.endpoint.password.to_string(),
                     self.endpoint.database.to_string(),
@@ -221,7 +221,18 @@ impl Drop for PooledConnection {
                     connections = connections.len(),
                     "Connection returned to the Pool"
                 );
+            } else {
+                tracing::warn!("Could not return Connection to the Pool");
             }
         }
+    }
+}
+
+impl fmt::Debug for PooledConnection {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("PooledConnection")
+            .field("connection", &self.connection)
+            .finish()
     }
 }
