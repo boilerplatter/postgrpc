@@ -1169,7 +1169,6 @@ dependencies = [
  "futures-util",
  "memchr",
  "once_cell",
- "parking_lot",
  "pin-project-lite",
  "postgres-protocol",
  "postguard",

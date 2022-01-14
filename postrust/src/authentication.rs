@@ -40,10 +40,12 @@ impl Default for ClusterConfiguration {
             5432,
         );
 
+        // FIXME: make this something other than a noop
         let statement_guard = Guard::new(
             // AllowedStatements::List(vec![Command::Select]),
             AllowedStatements::All,
-            AllowedFunctions::List(vec!["to_json".to_string(), "pg_sleep".to_string()]),
+            AllowedFunctions::All,
+            // AllowedFunctions::List(vec!["to_json".to_string(), "pg_sleep".to_string()]),
         );
 
         Self {

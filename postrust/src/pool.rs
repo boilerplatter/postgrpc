@@ -8,17 +8,16 @@ use crate::{
     tcp,
 };
 use futures_util::{SinkExt, TryStreamExt};
-use parking_lot::Mutex;
 use std::{
     fmt,
     num::ParseIntError,
     ops::{Deref, DerefMut},
     str::Utf8Error,
-    sync::{Arc, Weak},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc::UnboundedSender, AcquireError, Mutex, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -51,6 +50,9 @@ pub struct Pool {
 
     /// All pooled connections
     connections: Arc<Mutex<Vec<Connection>>>,
+
+    /// Queue of Connections to return to the Pool
+    returning_connections: UnboundedSender<Connection>,
 
     /// Permit system for making sure that the pool does not exceed its connection capacity
     permits: Arc<Semaphore>,
@@ -118,11 +120,32 @@ impl Pool {
 
                     let now = Instant::now();
 
-                    if let Some(mut connections) = connections.try_lock() {
-                        connections.retain(|connection: &Connection| {
-                            now.duration_since(connection.last_used()) < IDLE_CONNECTION_DURATION
-                        });
-                    }
+                    let mut connections = connections.lock().await;
+
+                    connections.retain(|connection: &Connection| {
+                        now.duration_since(connection.last_used()) < IDLE_CONNECTION_DURATION
+                    });
+                }
+            }
+        });
+
+        // periodically return connections to the pool
+        let (returning_connections, mut returning_connections_receiver) =
+            tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn({
+            let connections = connections.clone();
+
+            async move {
+                while let Some(connection) = returning_connections_receiver.recv().await {
+                    let mut connections = connections.lock().await;
+
+                    connections.push(connection);
+
+                    tracing::debug!(
+                        connections = connections.len(),
+                        "Connection returned to the Pool"
+                    );
                 }
             }
         });
@@ -132,6 +155,7 @@ impl Pool {
         Ok(Self {
             endpoint,
             connections,
+            returning_connections,
             permits: Arc::new(Semaphore::new(capacity)),
         })
     }
@@ -140,7 +164,7 @@ impl Pool {
     #[tracing::instrument]
     pub async fn get(&self) -> Result<PooledConnection, Error> {
         let permit = self.permits.clone().acquire_owned().await?;
-        let mut connections = self.connections.lock();
+        let mut connections = self.connections.lock().await;
 
         tracing::debug!(
             connections = connections.len(),
@@ -170,7 +194,7 @@ impl Pool {
 
         Ok(PooledConnection {
             connection: Some(connection),
-            connections: Arc::downgrade(&self.connections),
+            return_sender: self.returning_connections.clone(),
             _permit: permit,
         })
     }
@@ -189,7 +213,7 @@ impl fmt::Debug for Pool {
 // FIXME: avoid references here
 pub struct PooledConnection {
     connection: Option<Connection>,
-    connections: Weak<Mutex<Vec<Connection>>>,
+    return_sender: UnboundedSender<Connection>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -210,19 +234,10 @@ impl DerefMut for PooledConnection {
 impl Drop for PooledConnection {
     fn drop(&mut self) {
         if let Some(mut connection) = self.connection.take() {
-            if let Some(connections) = self.connections.upgrade() {
-                connection.update_last_used();
+            connection.update_last_used();
 
-                let mut connections = connections.lock();
-
-                connections.push(connection);
-
-                tracing::debug!(
-                    connections = connections.len(),
-                    "Connection returned to the Pool"
-                );
-            } else {
-                tracing::warn!("Could not return Connection to the Pool");
+            if let Err(error) = self.return_sender.send(connection) {
+                tracing::warn!(%error, "Error returning Connection to Pool");
             }
         }
     }
