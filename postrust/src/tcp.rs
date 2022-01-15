@@ -66,7 +66,7 @@ impl Stream for Connections {
             Poll::Ready(Ok((socket, remote_peer))) => {
                 let connection = Connection::new(socket, startup::Codec, remote_peer);
 
-                tracing::debug!(remote_peer = %remote_peer, "Connection accepted");
+                tracing::debug!(%remote_peer, "Connection accepted");
 
                 Poll::Ready(Some(Ok(connection)))
             }

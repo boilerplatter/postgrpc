@@ -94,17 +94,14 @@ impl From<tcp::Connection<backend::Codec>> for Connection {
             while let Some(message) = frontend_receiver.recv().await {
                 if backend_sink.send(message).await.is_err() {
                     return tracing::warn!(
-                        remote_address = %remote_address,
+                        %remote_address,
                         error = %Error::Sync,
                         "Closing proxied connection due to unrecoverable error"
                     );
                 }
             }
 
-            tracing::debug!(
-                remote_address = %remote_address,
-                "Closing proxied connection"
-            );
+            tracing::debug!(%remote_address, "Closing proxied connection");
         });
 
         Self {

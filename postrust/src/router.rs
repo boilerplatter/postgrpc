@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, TryStreamExt};
 use postguard::Guard;
 use std::{
-    collections::{btree_map::Entry, hash_map::DefaultHasher, BTreeMap},
+    collections::{hash_map::DefaultHasher, BTreeMap},
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -29,11 +29,9 @@ pub enum Error {
     Tcp(#[from] tcp::Error),
     #[error("Unroutable message type: {0:?}")]
     Unroutable(frontend::Message),
-    #[error("Error syncing messages between connections")]
+    #[error("Error syncing messages from the backend to the client")]
     Sync,
 }
-
-// FIXME: replace magic error codes with something in the protocol module
 
 /// State of the current transaction, along with its error responses
 #[derive(Debug)]
@@ -101,7 +99,7 @@ impl Router {
     pub async fn route(&self, message: frontend::Message) -> Result<(), Error> {
         let transaction = self.transaction.lock().await;
 
-        tracing::trace!(transaction = ?transaction, "Routing message");
+        tracing::trace!(?transaction, "Routing message");
 
         // ignore messages other than SYNC when the transaction is in ignore_till_sync mode
         if matches!(*transaction, Some(TransactionMode::IgnoreTillSync { .. }))
@@ -176,69 +174,80 @@ impl Router {
         // handle each message type as needed
         match message {
             frontend::Message::Parse(mut body) => {
-                // route to the proper connection based on the message type
-                // FIXME: only do this if there's not an existing transaction
-                let mut connection = if is_read_only {
-                    self.cluster.follower().await?
-                } else {
-                    self.cluster.leader().await?
+                // check that the statement doesn't already exist
+                let client_name = body.name();
+                let named_statements = self.named_statements.lock().await;
+                if named_statements.get(&client_name).is_some() {
+                    // FIXME: handle the "unnamed statement" case
+                    // (which can be overwritten without error)
+                    let code = "42P05".into();
+                    let name = String::from_utf8_lossy(&client_name);
+                    let message = format!(r#"Prepared statement "{name}" already exists"#).into();
+
+                    // put the session into an ignore_till_sync transaction
+                    let mut transaction = self.transaction.lock().await;
+
+                    match transaction.take() {
+                        Some(transaction_mode) => {
+                            *transaction = Some(transaction_mode.into_error(
+                                code,
+                                message,
+                                backend::Severity::Error,
+                            ));
+                        }
+                        None => {
+                            let connection = self.cluster.follower().await?;
+
+                            *transaction = Some(TransactionMode::IgnoreTillSync {
+                                code,
+                                message,
+                                connection,
+                                severity: backend::Severity::Error,
+                            });
+                        }
+                    }
+
+                    return Ok(());
                 };
 
-                // drain the connection of startup messages
-                // FIXME: make this internal to the connection's Stream impl
-                connection.startup_messages().await?;
-
-                // create a transaction if one doesn't already exist
-                let mut transaction = self.transaction.lock().await;
-
-                if transaction.is_none() {
-                    *transaction = Some(TransactionMode::InProgress { connection });
-                }
-
-                drop(transaction);
+                drop(named_statements);
 
                 // hash the parse body components to get a new statement name
-                let client_name = body.name();
                 let parameter_types = body.parameter_types();
                 let mut state = DefaultHasher::new();
                 statement.hash(&mut state);
                 parameter_types.hash(&mut state);
                 let hash = state.finish();
 
-                // store the name and hash of the statement if it doesn't already exist
-                let mut named_statements = self.named_statements.lock().await;
+                // prepare a Parse message with new statement name
                 body.name = hash.to_string().into();
+                let parse_message = frontend::Message::Parse(body.clone()); // FIXME: avoid clone
 
-                match named_statements.entry(client_name) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(body);
-                    }
-                    Entry::Occupied(entry) => {
-                        // FIXME: handle the "unnamed statement" case
-                        // (which can be overwritten without error)
-                        let name = String::from_utf8_lossy(entry.key());
-                        let message =
-                            format!(r#"Prepared statement "{name}" already exists"#).into();
+                // initialize a transaction if one doesn't exist
+                let mut transaction = self.transaction.lock().await;
 
-                        // move the transaction to an error state
-                        let mut transaction = self.transaction.lock().await;
+                if transaction.is_none() {
+                    // route to the proper connection based on the parse message
+                    let mut connection = if parse_message.is_read_only() {
+                        self.cluster.follower().await?
+                    } else {
+                        self.cluster.leader().await?
+                    };
 
-                        if let Some(transaction_mode) = transaction.take() {
-                            if let TransactionMode::InProgress { connection } = transaction_mode {
-                                let code = "42P05".into();
+                    // drain the connection of startup messages
+                    // FIXME: make this internal to the connection's Stream impl
+                    connection.startup_messages().await?;
 
-                                *transaction = Some(TransactionMode::IgnoreTillSync {
-                                    code,
-                                    message,
-                                    severity: backend::Severity::Error,
-                                    connection,
-                                });
-                            } else {
-                                *transaction = Some(transaction_mode);
-                            }
-                        }
-                    }
+                    *transaction = Some(TransactionMode::InProgress { connection });
                 }
+
+                drop(transaction);
+
+                // store the parse message body for later
+                // FIXME: store eagerly in the first check
+                let mut named_statements = self.named_statements.lock().await;
+
+                named_statements.insert(client_name, body);
             }
             frontend::Message::Bind(mut body) => {
                 // get the statement name to BIND to
@@ -459,9 +468,14 @@ impl Router {
                                 let mut transaction = connection.transaction().await?;
 
                                 while let Some(message) = transaction.try_next().await? {
-                                    self.backend_messages
-                                        .send(message)
-                                        .map_err(|_| Error::Sync)?;
+                                    self.backend_messages.send(message).map_err(|error| {
+                                        tracing::error!(
+                                            ?error,
+                                            "Failed to send backend message in SYNC"
+                                        );
+
+                                        Error::Sync
+                                    })?;
                                 }
                             }
                             TransactionMode::IgnoreTillSync {

@@ -54,7 +54,7 @@ impl Session {
         while let Some(message) = connection.try_next().await? {
             match message {
                 startup::Message::SslRequest { .. } => {
-                    tracing::debug!(connection = %connection, "SSLRequest heard during startup");
+                    tracing::debug!(%connection, "SSLRequest heard during startup");
 
                     connection.send(backend::Message::SslResponse).await?;
                 }
@@ -63,12 +63,7 @@ impl Session {
                     user,
                     mut options,
                 } => {
-                    tracing::debug!(
-                        version = %version,
-                        user = ?user,
-                        options = ?options,
-                        "Startup initiated"
-                    );
+                    tracing::debug!(%version, ?user, ?options, "Startup initiated");
 
                     // send the AuthenticationCleartextPassword message
                     // FIXME: use SASL by default instead
@@ -174,12 +169,15 @@ impl Session {
 
         tokio::spawn(async move {
             while let Some(message) = receiver.recv().await {
-                user_backend_messages.send(message).await?;
+                tracing::trace!(?message, "Sending message to the user message Sink");
+
+                if let Err(error) = user_backend_messages.send(message).await {
+                    tracing::error!(%error, "User message Sink error");
+                    break;
+                }
             }
 
-            tracing::debug!(connection = ?&remote_peer, "Closing Connection");
-
-            Ok::<_, Error>(())
+            tracing::debug!(connection = ?&remote_peer, "Closing Session Connection");
         });
 
         tracing::info!("Session initiated");
@@ -195,8 +193,6 @@ impl Session {
     /// Broker messages between a Connection and Cluster until the Session ends
     #[tracing::instrument(skip(self))]
     pub async fn serve(self) -> Result<(), Error> {
-        let router = self.router;
-
         self.frontend_messages
             .map_err(Error::Tcp)
             .try_take_while(|message| match message {
@@ -216,7 +212,9 @@ impl Session {
                 }
                 _ => future::ok(true),
             })
-            .try_for_each_concurrent(None, |message| router.route(message).map_err(Error::Router))
+            .try_for_each_concurrent(None, |message| {
+                self.router.route(message).map_err(Error::Router)
+            })
             .await
     }
 }

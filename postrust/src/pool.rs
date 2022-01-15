@@ -210,7 +210,6 @@ impl fmt::Debug for Pool {
 }
 
 /// Wrapper around a pooled Connection for lifecycle management
-// FIXME: avoid references here
 pub struct PooledConnection {
     connection: Option<Connection>,
     return_sender: UnboundedSender<Connection>,
