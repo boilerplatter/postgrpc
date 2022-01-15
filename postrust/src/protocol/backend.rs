@@ -148,8 +148,6 @@ impl Message {
                         let mut column = vec![0u8; column_length as usize];
                         buf.read_exact(&mut column)?;
 
-                        tracing::trace!(column = ?&column, "New column read from buffer");
-
                         columns.push(Some(column.into()));
                     }
                 }

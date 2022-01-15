@@ -169,11 +169,8 @@ impl Session {
 
         tokio::spawn(async move {
             while let Some(message) = receiver.recv().await {
-                tracing::trace!(?message, "Sending message to the user message Sink");
-
                 if let Err(error) = user_backend_messages.send(message).await {
-                    tracing::error!(%error, "User message Sink error");
-                    break;
+                    return tracing::error!(%error, "User message Sink error");
                 }
             }
 

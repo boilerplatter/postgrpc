@@ -1,6 +1,9 @@
 use crate::{
     flush::Flush,
-    protocol::{backend, frontend},
+    protocol::{
+        backend::{self, TransactionStatus},
+        frontend,
+    },
     tcp,
     transaction::Transaction,
 };
@@ -19,17 +22,20 @@ use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Error syncing proxied connection")]
-    Sync,
     #[error(transparent)]
     Tcp(#[from] tcp::Error),
+    #[error("Error syncing proxied connection")]
+    Sync,
+    #[error("Connection closed unexpectedly during startup")]
+    Startup,
 }
 
 pin_project_lite::pin_project! {
     /// Proxied database connection for use with the Pool
     pub struct Connection {
-        frontend_sink: UnboundedSender<frontend::Message>,
+        has_flushed_startup_messages: bool,
         startup_messages: Vec<backend::Message>,
+        frontend_sink: UnboundedSender<frontend::Message>,
         prepared_statements: HashSet<Bytes>,
         last_used: Instant,
         #[pin]
@@ -38,15 +44,26 @@ pin_project_lite::pin_project! {
 }
 
 impl Connection {
+    /// Initialize the startup message cache by running the Connection stream to a ready state
+    #[tracing::instrument]
+    async fn initialize_startup_messages(&mut self) -> Result<(), Error> {
+        tracing::trace!("Initializing startup messages");
+
+        while !self.has_flushed_startup_messages {
+            self.try_next().await?.ok_or(Error::Startup)?;
+        }
+
+        Ok(())
+    }
+
     /// Fetch the startup messages associated with the connection
+    #[tracing::instrument]
     pub async fn startup_messages(
         &mut self,
     ) -> Result<impl Iterator<Item = backend::Message>, Error> {
-        if self.startup_messages.is_empty() {
-            self.startup_messages = Transaction::new(&mut self.backend_stream)
-                .try_collect()
-                .await?;
-        }
+        self.initialize_startup_messages().await?;
+
+        tracing::info!(messages = ?&self.startup_messages, "Copying startup messages");
 
         let messages = self.startup_messages.clone().into_iter();
 
@@ -64,22 +81,19 @@ impl Connection {
     }
 
     /// Subscribe to backend messages for an entire top-level transaction
+    #[tracing::instrument]
     pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
-        // lazily update the startup message cache on first interaction
-        // FIXME: do this at the stream level, if possible (not every caller uses transaction() or
-        // startup_messages() first if they're using the stream interface)
-        if self.startup_messages.is_empty() {
-            self.startup_messages = Transaction::new(&mut self.backend_stream)
-                .try_collect()
-                .await?;
-        }
+        self.initialize_startup_messages().await?;
 
         Ok(Transaction::new(&mut self.backend_stream))
     }
 
     /// Flush the messages in the connection until the next Pending state
-    pub fn flush(&mut self) -> Flush<'_> {
-        Flush::new(&mut self.backend_stream)
+    #[tracing::instrument]
+    pub async fn flush(&mut self) -> Result<Flush<'_>, Error> {
+        self.initialize_startup_messages().await?;
+
+        Ok(Flush::new(&mut self.backend_stream))
     }
 }
 
@@ -107,6 +121,7 @@ impl From<tcp::Connection<backend::Codec>> for Connection {
         Self {
             frontend_sink,
             backend_stream,
+            has_flushed_startup_messages: false,
             startup_messages: Vec::new(),
             prepared_statements: HashSet::new(),
             last_used: Instant::now(),
@@ -150,7 +165,38 @@ impl Stream for Connection {
     type Item = Result<backend::Message, tcp::Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.project().backend_stream.poll_next(context)
+        let projected = self.project();
+        let next = projected.backend_stream.poll_next(context);
+
+        // forward backend messages if the startup messages have been flushed
+        if *projected.has_flushed_startup_messages {
+            return next;
+        }
+
+        // cache startup-specific messages for later
+        if let Poll::Ready(Some(Ok(message))) = next {
+            if matches!(
+                &message,
+                backend::Message::ReadyForQuery {
+                    transaction_status: TransactionStatus::Idle
+                }
+            ) {
+                *projected.has_flushed_startup_messages = true;
+            }
+
+            projected.startup_messages.push(message);
+
+            context.waker().wake_by_ref();
+
+            return Poll::Pending;
+        }
+
+        next
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.backend_stream.size_hint();
+        (0, upper)
     }
 }
 

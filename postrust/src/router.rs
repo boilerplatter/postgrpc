@@ -228,15 +228,11 @@ impl Router {
 
                 if transaction.is_none() {
                     // route to the proper connection based on the parse message
-                    let mut connection = if parse_message.is_read_only() {
+                    let connection = if parse_message.is_read_only() {
                         self.cluster.follower().await?
                     } else {
                         self.cluster.leader().await?
                     };
-
-                    // drain the connection of startup messages
-                    // FIXME: make this internal to the connection's Stream impl
-                    connection.startup_messages().await?;
 
                     *transaction = Some(TransactionMode::InProgress { connection });
                 }
@@ -314,17 +310,11 @@ impl Router {
                     }
                     None => {
                         // route to the proper connection based on the parse message
-                        let mut connection = if parse_message.is_read_only() {
+                        if parse_message.is_read_only() {
                             self.cluster.follower().await?
                         } else {
                             self.cluster.leader().await?
-                        };
-
-                        // drain the connection of startup messages
-                        // FIXME: make this internal to the connection's Stream impl
-                        connection.startup_messages().await?;
-
-                        connection
+                        }
                     }
                 };
 
@@ -538,7 +528,7 @@ impl Router {
                             connection.send(frontend::Message::Flush).await?;
 
                             // flush the output up to the next pending point
-                            let mut flush = connection.flush();
+                            let mut flush = connection.flush().await?;
 
                             while let Some(message) = flush.try_next().await? {
                                 self.backend_messages
