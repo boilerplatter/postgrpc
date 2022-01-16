@@ -63,8 +63,6 @@ impl Connection {
     ) -> Result<impl Iterator<Item = backend::Message>, Error> {
         self.initialize_startup_messages().await?;
 
-        tracing::info!(messages = ?&self.startup_messages, "Copying startup messages");
-
         let messages = self.startup_messages.clone().into_iter();
 
         Ok(messages)

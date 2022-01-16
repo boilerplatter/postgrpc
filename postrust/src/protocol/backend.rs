@@ -11,14 +11,13 @@ const ERROR_RESPONSE_TAG: u8 = b'E';
 const ERROR_SEVERITY_TAG: u8 = b'S';
 const ERROR_MESSAGE_TAG: u8 = b'M';
 const ERROR_CODE_TAG: u8 = b'C';
-const PARAMETER_STATUS_TAG: u8 = b'S';
 const READY_FOR_QUERY_TAG: u8 = b'Z';
 const SSL_NOT_SUPPORTED_TAG: u8 = b'N';
 const DATA_ROW_TAG: u8 = b'D';
 
 /// Postgres backend message variants that Postrust cares about
 // FIXME: align with frontend message format style
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     AuthenticationMd5Password {
         salt: [u8; 4],
@@ -42,23 +41,23 @@ pub enum Message {
         message: Bytes,
         code: Bytes,
     },
-    ParameterStatus {
-        name: Bytes,
-        value: Bytes,
-    },
     ReadyForQuery {
         transaction_status: TransactionStatus,
     },
     SslResponse,
-    // catchall for frames we don't care about
-    Forward(Bytes),
+    Forward(Bytes), // handles frames we don't care about
 }
 
 impl Message {
     /// Parse a single message frame of known and established length
     #[inline]
     pub fn parse(buf: &mut BytesMut) -> io::Result<Option<Message>> {
+        if buf.len() < 5 {
+            return Ok(None);
+        }
+
         let tag = buf[0];
+
         let len = (&buf[1..5]).read_u32::<BigEndian>().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -67,6 +66,13 @@ impl Message {
         })?;
 
         let total_len = len as usize + 1;
+
+        if total_len > buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: invalid length",
+            ));
+        }
 
         let mut buf = Buffer {
             bytes: buf.split_to(total_len).freeze(),
@@ -114,12 +120,6 @@ impl Message {
                     ))
                 }
             },
-            PARAMETER_STATUS_TAG => {
-                let name = buf.read_cstr()?;
-                let value = buf.read_cstr()?;
-
-                Message::ParameterStatus { name, value }
-            }
             READY_FOR_QUERY_TAG => {
                 let transaction_status = match buf.read_u8()? {
                     b'I' => TransactionStatus::Idle,
@@ -135,6 +135,7 @@ impl Message {
 
                 Message::ReadyForQuery { transaction_status }
             }
+            // FIXME: avoid parsing this once we refactor MAX_CONNECTIONS, etc
             DATA_ROW_TAG => {
                 let columns_length = buf.read_u16::<BigEndian>()?;
                 let mut columns = Vec::with_capacity(columns_length as usize);
@@ -234,14 +235,6 @@ impl Message {
                 bytes.put_i32(fields_length + 4);
                 bytes.put_slice(&fields);
             }
-            Self::ParameterStatus { name, value } => {
-                bytes.put_u8(PARAMETER_STATUS_TAG);
-                bytes.put_i32((name.len() as i32 + 1) + (value.len() as i32 + 1) + 4);
-                bytes.put_slice(&name);
-                bytes.put_u8(0);
-                bytes.put_slice(&value);
-                bytes.put_u8(0);
-            }
             Self::ReadyForQuery { transaction_status } => {
                 bytes.put_u8(READY_FOR_QUERY_TAG);
                 bytes.put_i32(5);
@@ -286,7 +279,7 @@ impl Message {
 
 /// Error severity levels
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Severity {
     Error,
     Fatal,
@@ -308,7 +301,7 @@ impl Severity {
 
 /// Possible transaction statuses for use in ReadyForQuery messages
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TransactionStatus {
     Idle,
     Transaction,
@@ -385,5 +378,124 @@ impl Decoder for Codec {
 
         // send the frame along
         Ok(Some(frame))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Message, Severity, TransactionStatus};
+    use bytes::{Bytes, BytesMut};
+
+    // mock message payloads for decoding
+    static FORWARDED_MESSAGE: Bytes = Bytes::from_static(
+        b"T\0\0\0!\0\x01?column?\0\0\0\0\0\0\0\0\0\0\x19\xff\xff\xff\xff\xff\xff\0\0",
+    );
+    static AUTHENTICATION_MESSAGES: Bytes = Bytes::from_static(
+        b"R\0\0\06\0\0\0\x0cv=veUyecS5U3NVXYF2igQ6J6sEKuOqXdeVJg5qoV6oBu0=R\0\0\0\x08\0\0\0\0",
+    );
+    static READY_FOR_QUERY_MESSAGE: Bytes = Bytes::from_static(b"Z\0\0\0\x05I");
+
+    #[test]
+    fn ignores_empty_bytes() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(b"");
+        let result = Message::parse(&mut input).expect("Error parsing empty message");
+
+        assert!(result.is_none(), "Failed to skip empty bytes");
+    }
+
+    #[test]
+    fn does_not_parse_arbitrary_bytes() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(b"testing");
+        let result = Message::parse(&mut input);
+
+        assert!(result.is_err(), "Incorrectly parsed arbitrary bytes");
+    }
+
+    #[test]
+    fn parses_valid_unhandled_messages() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(&FORWARDED_MESSAGE);
+        let result = Message::parse(&mut input)
+            .expect("Error parsing valid message")
+            .expect("Error parsing complete message chunk");
+
+        assert_eq!(
+            result,
+            Message::Forward(FORWARDED_MESSAGE.clone()),
+            "Incorrectly parsed valid forwarded message"
+        );
+    }
+
+    #[test]
+    fn writes_arbitrary_forwarded_bytes() {
+        let payload = Bytes::from_static(b"testing");
+        let mut output = BytesMut::new();
+        Message::Forward(payload.clone()).write(&mut output);
+
+        assert_eq!(
+            Bytes::from(output),
+            payload,
+            "Incorrectly wrote arbitrary bytes through Message::Forward"
+        )
+    }
+
+    #[test]
+    fn parses_authentication_messages() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(&AUTHENTICATION_MESSAGES);
+        let result = Message::parse(&mut input)
+            .expect("Error parsing valid message")
+            .expect("Error parsing complete message chunk");
+
+        if !matches!(result, Message::AuthenticationSASLFinal { .. }) {
+            panic!("Incorrectly parsed valid AuthenticationSASLFinal message");
+        }
+
+        let result = Message::parse(&mut input)
+            .expect("Error parsing valid message")
+            .expect("Error parsing complete message chunk");
+
+        assert_eq!(
+            result,
+            Message::AuthenticationOk,
+            "Incorrectly parsed valid AuthenticationOk message"
+        );
+    }
+
+    #[test]
+    fn parses_ready_for_query_messages() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(&READY_FOR_QUERY_MESSAGE);
+        let result = Message::parse(&mut input)
+            .expect("Error parsing valid message")
+            .expect("Error parsing complete message chunk");
+
+        assert_eq!(
+            result,
+            Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle
+            },
+            "Incorrectly parsed valid ReadyForQuery message"
+        );
+    }
+
+    #[test]
+    fn writes_error_response_messages() {
+        let mut output = BytesMut::new();
+
+        Message::ErrorResponse {
+            code: "25000".into(),
+            message: "Something went wrong".into(),
+            severity: Severity::Error,
+        }
+        .write(&mut output);
+
+        assert_eq!(
+            Bytes::from(output),
+            Bytes::from_static(b"E\0\0\0)SERROR\0C25000\0MSomething went wrong\0\0"),
+            "Incorrectly wrote valid ErrorResponse"
+        );
     }
 }

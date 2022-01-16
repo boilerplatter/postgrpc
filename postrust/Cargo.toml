@@ -40,4 +40,9 @@ version = "0.6.9"
 features = ["env-filter"]
 version = "0.3.6"
 
+[dev-dependencies]
+# anyhow = "1.0.52"
+# spekt = "0.1.1"
+
 [features]
+
