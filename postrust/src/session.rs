@@ -3,23 +3,22 @@ use crate::{
     connection,
     credentials::{self, Credentials, CredentialsBuilder},
     endpoint::Endpoint,
-    protocol::{backend, frontend, startup},
+    protocol::{
+        backend,
+        errors::{
+            CONNECTION_EXCEPTION, FEATURE_NOT_SUPPORTED, INVALID_PASSWORD, PROTOCOL_VIOLATION,
+        },
+        frontend, startup,
+    },
     router::{self, Router},
     tcp,
 };
-use bytes::Bytes;
 use futures_core::Future;
 use futures_util::{future, stream::SplitStream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use postguard::Guard;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedReceiver;
-
-// FIXME: Unify error codes in protocol module
-static FEATURE_NOT_SUPPORTED: Bytes = Bytes::from_static(b"0A000");
-static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
-static PROTOCOL_VIOLATION: Bytes = Bytes::from_static(b"08P01");
-static INVALID_PASSWORD: Bytes = Bytes::from_static(b"28P01");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -247,8 +246,8 @@ async fn handle_cluster_configuration(
                     // should be sending?
                     connection
                         .send(backend::Message::ErrorResponse {
+                            code: INVALID_PASSWORD.clone(),
                             severity: backend::Severity::Fatal,
-                            code: "28P01".into(),
                             message: format!(
                                 r#"password authentication failed for user "{}""#,
                                 String::from_utf8_lossy(&credentials.user),

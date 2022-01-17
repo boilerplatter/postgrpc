@@ -8,7 +8,6 @@ use tcp::Connections;
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
-// mod authentication;
 mod cluster;
 mod configuration;
 mod connection;

@@ -1,10 +1,9 @@
 use crate::{
     endpoint::{Endpoint, Endpoints},
     pool::{self, Pool},
-    protocol::backend,
+    protocol::{backend, errors::CONNECTION_DOES_NOT_EXIST},
     tcp,
 };
-use bytes::Bytes;
 use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use once_cell::sync::Lazy;
 use postguard::{AllowedFunctions, AllowedStatements, Guard};
@@ -15,9 +14,6 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
-
-// FIXME: Unify error codes in protocol module
-static CONNECTION_DOES_NOT_EXIST: Bytes = Bytes::from_static(b"08003");
 
 #[derive(Debug, Error)]
 pub enum Error {

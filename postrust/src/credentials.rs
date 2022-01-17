@@ -1,9 +1,6 @@
-use crate::protocol::backend;
+use crate::protocol::{backend, errors::INVALID_PASSWORD};
 use bytes::Bytes;
 use thiserror::Error;
-
-// FIXME: unify in protocol module
-static INVALID_PASSWORD: Bytes = Bytes::from_static(b"28P01");
 
 #[derive(Debug, Error)]
 #[error("Invalid credentials")]

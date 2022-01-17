@@ -476,6 +476,7 @@ impl Decoder for Codec {
 #[cfg(test)]
 mod test {
     use super::{Message, Severity, TransactionStatus};
+    use crate::protocol::errors::{INVALID_TRANSACTION_STATE, TOO_MANY_CONNECTIONS};
     use bytes::{Bytes, BytesMut};
 
     // mock message payloads for decoding
@@ -588,7 +589,7 @@ mod test {
         assert_eq!(
             result,
             Message::ErrorResponse {
-                code: "53300".into(),
+                code: TOO_MANY_CONNECTIONS.clone(),
                 message: "sorry, too many clients already".into(),
                 severity: Severity::Fatal
             },
@@ -601,7 +602,7 @@ mod test {
         let mut output = BytesMut::new();
 
         Message::ErrorResponse {
-            code: "25000".into(),
+            code: INVALID_TRANSACTION_STATE.clone(),
             message: "Something went wrong".into(),
             severity: Severity::Error,
         }

@@ -4,6 +4,10 @@ use crate::{
     pool::PooledConnection,
     protocol::{
         backend,
+        errors::{
+            CONNECTION_EXCEPTION, DUPLICATE_PREPARED_STATEMENT, FEATURE_NOT_SUPPORTED,
+            INSUFFICIENT_PRIVILEGE, INVALID_SQL_STATEMENT_NAME, INVALID_TRANSACTION_STATE,
+        },
         frontend::{self, ParseBody},
     },
     tcp,
@@ -18,10 +22,6 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
-
-// FIXME: unify in protocol module
-static FEATURE_NOT_SUPPORTED: Bytes = Bytes::from_static(b"0A000");
-static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -157,7 +157,7 @@ impl Router {
             Err(error) => {
                 tracing::warn!(reason = %error, "Statement rejected");
 
-                let code = "42501".into();
+                let code = INSUFFICIENT_PRIVILEGE.clone();
                 let message = error.to_string().into();
                 let severity = backend::Severity::Error;
                 let mut transaction = self.transaction.lock().await;
@@ -204,7 +204,7 @@ impl Router {
                 if named_statements.get(&client_name).is_some() {
                     // FIXME: handle the "unnamed statement" case
                     // (which can be overwritten without error)
-                    let code = "42P05".into();
+                    let code = DUPLICATE_PREPARED_STATEMENT.clone();
                     let name = String::from_utf8_lossy(&client_name);
                     let message = format!(r#"Prepared statement "{name}" already exists"#).into();
 
@@ -280,7 +280,7 @@ impl Router {
                         parse_body
                     }
                     None => {
-                        let code = "26000".into();
+                        let code = INVALID_SQL_STATEMENT_NAME.clone();
                         let statement = String::from_utf8_lossy(&client_statement);
                         let message =
                             format!(r#"Prepared statement "{statement}" not found"#).into();
@@ -369,7 +369,7 @@ impl Router {
                         // let the user know about the invalid transaction state
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
-                                code: "25000".into(),
+                                code: INVALID_TRANSACTION_STATE.clone(),
                                 message: "Invalid transaction state".into(),
                                 severity: backend::Severity::Error,
                             })
@@ -396,7 +396,7 @@ impl Router {
                         // let the user know about the invalid transaction state
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
-                                code: "25000".into(),
+                                code: INVALID_TRANSACTION_STATE.clone(),
                                 message: "Invalid transaction state".into(),
                                 severity: backend::Severity::Error,
                             })
@@ -436,7 +436,7 @@ impl Router {
                                     *transaction = Some(transaction_mode);
                                 }
                                 None => {
-                                    let code = "26000".into();
+                                    let code = INVALID_SQL_STATEMENT_NAME.clone();
                                     let statement = String::from_utf8_lossy(&name);
                                     let message =
                                         format!(r#"Prepared statement "{statement}" not found"#)
@@ -460,7 +460,7 @@ impl Router {
                         // let the user know about the invalid transaction state
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
-                                code: "25000".into(),
+                                code: INVALID_TRANSACTION_STATE.clone(),
                                 message: "Invalid transaction state".into(),
                                 severity: backend::Severity::Error,
                             })
@@ -534,7 +534,7 @@ impl Router {
                         // let the user know about the invalid transaction state
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
-                                code: "25000".into(),
+                                code: INVALID_TRANSACTION_STATE.clone(),
                                 message: "Invalid transaction state".into(),
                                 severity: backend::Severity::Error,
                             })
@@ -565,7 +565,7 @@ impl Router {
                         // let the user know about the invalid transaction state
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
-                                code: "25000".into(),
+                                code: INVALID_TRANSACTION_STATE.clone(),
                                 message: "Invalid transaction state".into(),
                                 severity: backend::Severity::Error,
                             })

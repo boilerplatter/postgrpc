@@ -2,6 +2,7 @@ use crate::{
     flush::Flush,
     protocol::{
         backend::{self, TransactionStatus},
+        errors::CONNECTION_EXCEPTION,
         frontend,
     },
     tcp,
@@ -22,9 +23,6 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
-
-// FIXME: Unify error codes in protocol module
-static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
 
 #[derive(Debug, Error)]
 pub enum Error {
