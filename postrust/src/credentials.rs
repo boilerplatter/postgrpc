@@ -1,9 +1,23 @@
+use crate::protocol::backend;
 use bytes::Bytes;
 use thiserror::Error;
+
+// FIXME: unify in protocol module
+static INVALID_PASSWORD: Bytes = Bytes::from_static(b"28P01");
 
 #[derive(Debug, Error)]
 #[error("Invalid credentials")]
 pub struct Error;
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        Self::ErrorResponse {
+            code: INVALID_PASSWORD.clone(),
+            message: error.to_string().into(),
+            severity: backend::Severity::Fatal,
+        }
+    }
+}
 
 /// Database connection credentials from the connection string
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

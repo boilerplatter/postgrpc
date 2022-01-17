@@ -1,8 +1,10 @@
 use crate::{
     endpoint::{Endpoint, Endpoints},
     pool::{self, Pool},
+    protocol::backend,
     tcp,
 };
+use bytes::Bytes;
 use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use once_cell::sync::Lazy;
 use postguard::{AllowedFunctions, AllowedStatements, Guard};
@@ -14,12 +16,28 @@ use std::{
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+// FIXME: Unify error codes in protocol module
+static CONNECTION_DOES_NOT_EXIST: Bytes = Bytes::from_static(b"08003");
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
     Tcp(#[from] tcp::Error),
     #[error("Cluster configuration for the current user is missing a leader")]
     MissingLeader,
+}
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        match error {
+            Error::Tcp(error) => Self::from(error),
+            Error::MissingLeader => Self::ErrorResponse {
+                code: CONNECTION_DOES_NOT_EXIST.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+        }
+    }
 }
 
 /// Timeout for fetching a connection from upstream

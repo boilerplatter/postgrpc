@@ -56,7 +56,7 @@ where
             }
         }
         Err(error) => {
-            tracing::error!(error = ?error, "Failed to start session");
+            tracing::warn!(error = ?error, "Failed to start session");
         }
     }
 }

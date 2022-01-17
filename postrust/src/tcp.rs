@@ -64,17 +64,17 @@ impl From<&Error> for backend::Message {
             | Error::TcpConnect { .. } => Self::ErrorResponse {
                 code: CONNECTION_FAILURE.clone(),
                 message: error.to_string().into(),
-                severity: backend::Severity::Error,
+                severity: backend::Severity::Fatal,
             },
             Error::Sasl(..) => Self::ErrorResponse {
                 code: CONNECTION_EXCEPTION.clone(),
                 message: error.to_string().into(),
-                severity: backend::Severity::Error,
+                severity: backend::Severity::Fatal,
             },
             Error::Unauthorized => Self::ErrorResponse {
                 code: INVALID_PASSWORD.clone(),
                 message: error.to_string().into(),
-                severity: backend::Severity::Error,
+                severity: backend::Severity::Fatal,
             },
             Error::Upstream {
                 code,

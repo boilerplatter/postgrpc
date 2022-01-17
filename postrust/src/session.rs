@@ -1,15 +1,25 @@
 use crate::{
     cluster::{self, Cluster, CLUSTERS},
     connection,
-    credentials::{self, Credentials},
+    credentials::{self, Credentials, CredentialsBuilder},
+    endpoint::Endpoint,
     protocol::{backend, frontend, startup},
     router::{self, Router},
     tcp,
 };
+use bytes::Bytes;
 use futures_core::Future;
 use futures_util::{future, stream::SplitStream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
+use postguard::Guard;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::mpsc::UnboundedReceiver;
+
+// FIXME: Unify error codes in protocol module
+static FEATURE_NOT_SUPPORTED: Bytes = Bytes::from_static(b"0A000");
+static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
+static PROTOCOL_VIOLATION: Bytes = Bytes::from_static(b"08P01");
+static INVALID_PASSWORD: Bytes = Bytes::from_static(b"28P01");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -23,14 +33,48 @@ pub enum Error {
     Router(#[from] router::Error),
     #[error(transparent)]
     Tcp(#[from] tcp::Error),
+    #[error("Message {0:?} violates Postgres message protocol")]
+    Protocol(frontend::Message),
     #[error("Error flushing startup messages on session init")]
     Flush,
-    #[error("Connection attempt failed authorization step")]
+    #[error("Failed authorization step")]
     Unauthorized,
     #[error("Message type not yet supported")]
     Unimplemented,
     #[error("Connection closed unexpectedly")]
     UnexpectedEof,
+}
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        match error {
+            Error::Cluster(error) => Self::from(error),
+            Error::Connection(error) => Self::from(error),
+            Error::Credentials(error) => Self::from(error),
+            Error::Router(error) => Self::from(error),
+            Error::Tcp(error) => Self::from(error),
+            Error::Protocol(..) => Self::ErrorResponse {
+                code: PROTOCOL_VIOLATION.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+            Error::Unauthorized => Self::ErrorResponse {
+                code: INVALID_PASSWORD.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+            Error::Unimplemented => Self::ErrorResponse {
+                code: FEATURE_NOT_SUPPORTED.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+            Error::Flush | Error::UnexpectedEof => Self::ErrorResponse {
+                code: CONNECTION_EXCEPTION.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+        }
+    }
 }
 
 /// User session wrapper that brokers messages between user connections and clusters
@@ -43,48 +87,18 @@ impl Session {
     /// Create a new session
     #[tracing::instrument]
     pub async fn new(mut connection: tcp::Connection<startup::Codec>) -> Result<Self, Error> {
-        // FIXME: convert all errors during startup into backend::Message::ErrorResponses for
-        // better communication with clients before disconnecting
-
         tracing::debug!("Retrieving Session for Connection");
 
         // get the remote address for logging
         let remote_peer = connection.peer();
 
-        // handle the startup messages
+        // handle the startup phase of the TCP connection
         let mut credentials = Credentials::build();
 
-        while let Some(message) = connection.try_next().await? {
-            match message {
-                startup::Message::SslRequest { .. } => {
-                    tracing::debug!(%connection, "SSLRequest heard during startup");
-
-                    connection.send(backend::Message::SslResponse).await?;
-                }
-                startup::Message::Startup {
-                    version,
-                    user,
-                    mut options,
-                } => {
-                    tracing::debug!(%version, ?user, ?options, "Startup initiated");
-
-                    // send the AuthenticationCleartextPassword message
-                    // FIXME: use SASL by default instead
-                    connection
-                        .send(backend::Message::AuthenenticationCleartextPassword)
-                        .await?;
-
-                    // store the previous credentials
-                    credentials.user(user);
-
-                    if let Some(database) = options.remove("database".as_bytes()) {
-                        credentials.database(database);
-                    }
-
-                    break;
-                }
-            }
-        }
+        if let Err(error) = handle_startup(&mut credentials, &mut connection).await {
+            let mut connection = tcp::Connection::<frontend::Codec>::from(connection);
+            return Err(handle_error(&mut connection, error).await?);
+        };
 
         // handle the password verification and client-side auth phase
         let mut connection = tcp::Connection::<frontend::Codec>::from(connection);
@@ -93,89 +107,23 @@ impl Session {
             leaders,
             followers,
             statement_guard,
-        } = match connection.try_next().await?.ok_or(Error::UnexpectedEof)? {
-            frontend::Message::PasswordMessage(message) => {
-                let password = message.cleartext_password();
-
-                // validate the credentials with the given password
-                credentials.password(password);
-                let credentials = credentials.finish()?;
-
-                // get the cluster configuration from the auth query
-                // FIXME: run externally/validate
-                match &credentials {
-                    Credentials {
-                        user,
-                        database,
-                        password,
-                    } if user == "test" && database == "testdb" && password == "hunter2" => {}
-                    credentials => {
-                        // reject the connection
-                        // FIXME: figure out how to do this without getting a Connection refused error
-                        // in psql (see: pgbouncer and postgres itself). Is there another frame that we
-                        // should be sending?
-                        connection
-                            .send(backend::Message::ErrorResponse {
-                                severity: backend::Severity::Fatal,
-                                code: "28P01".into(),
-                                message: format!(
-                                    r#"password authentication failed for user "{}""#,
-                                    String::from_utf8_lossy(&credentials.user),
-                                )
-                                .into(),
-                            })
-                            .await?;
-
-                        return Err(Error::Unauthorized);
-                    }
-                }
-
-                // return the pre-query startup messages
-                connection.send(backend::Message::AuthenticationOk).await?;
-
-                Ok(cluster::Configuration::default()) // FIXME: get from auth step instead
-            }
-            _ => Err(Error::Unauthorized),
-        }?;
+        } = match handle_cluster_configuration(credentials, &mut connection).await {
+            Ok(configuration) => configuration,
+            Err(error) => return Err(handle_error(&mut connection, error).await?),
+        };
 
         // get or init the cluster for the session
-        let key = (leaders, followers);
-
-        let clusters = CLUSTERS.read().await;
-
-        let cluster = match clusters.get(&key) {
-            Some(cluster) => Arc::clone(cluster),
-            None => {
-                drop(clusters);
-
-                let cluster = Cluster::connect(key.0.clone(), key.1.clone())
-                    .await
-                    .map(Arc::new)?;
-
-                let session_cluster = Arc::clone(&cluster);
-
-                CLUSTERS.write().await.insert(key, cluster);
-
-                session_cluster
-            }
+        let cluster = match handle_cluster_generation(leaders, followers).await {
+            Ok(cluster) => cluster,
+            Err(error) => return Err(handle_error(&mut connection, error).await?),
         };
 
-        // flush the cluster's startup messages on session init
-        let (backend_messages, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-
-        let mut leader = match cluster.leader().await {
-            // forward TCP-level errors from upstream if possible
-            Err(cluster::Error::Tcp(error)) => {
-                connection.send(backend::Message::from(&error)).await?;
-                return Err(error.into());
-            }
-            Err(error) => return Err(error.into()),
-            Ok(leader) => leader,
+        // generate a router from the cluster
+        let (router, mut receiver) = match handle_router_generation(cluster, statement_guard).await
+        {
+            Ok(router_pair) => router_pair,
+            Err(error) => return Err(handle_error(&mut connection, error).await?),
         };
-
-        for message in leader.startup_messages().await? {
-            backend_messages.send(message).map_err(|_| Error::Flush)?;
-        }
 
         // send messages from the session back upstream to the connection
         let (mut user_backend_messages, frontend_messages) = connection.split();
@@ -191,8 +139,6 @@ impl Session {
         });
 
         tracing::info!("Session initiated");
-
-        let router = Router::new(cluster, backend_messages, Arc::new(statement_guard));
 
         Ok(Self {
             router,
@@ -218,7 +164,7 @@ impl Session {
                 | frontend::Message::SASLInitialResponse(..)
                 | frontend::Message::SASLResponse(..) => {
                     tracing::warn!("Authentication message received outside of a handshake");
-                    future::err(Error::Unauthorized)
+                    future::err(Error::Protocol(message.clone()))
                 }
                 frontend::Message::Forward(..) => {
                     tracing::error!("Unsupported message type found");
@@ -231,4 +177,153 @@ impl Session {
             })
             .await
     }
+}
+
+/// Convert a startup-flavored TCP Connection into a frontend-flavored TCP Connection
+async fn handle_startup(
+    credentials: &mut CredentialsBuilder,
+    connection: &mut tcp::Connection<startup::Codec>,
+) -> Result<(), Error> {
+    while let Some(message) = connection.try_next().await? {
+        match message {
+            startup::Message::SslRequest { .. } => {
+                tracing::debug!(%connection, "SSLRequest heard during startup");
+
+                connection.send(backend::Message::SslResponse).await?
+            }
+            startup::Message::Startup {
+                version,
+                user,
+                mut options,
+            } => {
+                tracing::debug!(%version, ?user, ?options, "Startup initiated");
+
+                // send the AuthenticationCleartextPassword message
+                // FIXME: use SASL by default instead
+                connection
+                    .send(backend::Message::AuthenenticationCleartextPassword)
+                    .await?;
+
+                // store the previous credentials
+                credentials.user(user);
+
+                if let Some(database) = options.remove("database".as_bytes()) {
+                    credentials.database(database);
+                }
+
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a cluster configuration from a frontend-flavored TCP Connection
+async fn handle_cluster_configuration(
+    mut credentials: CredentialsBuilder,
+    connection: &mut tcp::Connection<frontend::Codec>,
+) -> Result<cluster::Configuration, Error> {
+    match connection.try_next().await?.ok_or(Error::UnexpectedEof)? {
+        frontend::Message::PasswordMessage(message) => {
+            let password = message.cleartext_password();
+
+            // validate the credentials with the given password
+            credentials.password(password);
+            let credentials = credentials.finish()?;
+
+            // get the cluster configuration from the auth query
+            // FIXME: run externally/validate
+            match &credentials {
+                Credentials {
+                    user,
+                    database,
+                    password,
+                } if user == "test" && database == "testdb" && password == "hunter2" => {}
+                credentials => {
+                    // reject the connection
+                    // FIXME: figure out how to do this without getting a Connection refused error
+                    // in psql (see: pgbouncer and postgres itself). Is there another frame that we
+                    // should be sending?
+                    connection
+                        .send(backend::Message::ErrorResponse {
+                            severity: backend::Severity::Fatal,
+                            code: "28P01".into(),
+                            message: format!(
+                                r#"password authentication failed for user "{}""#,
+                                String::from_utf8_lossy(&credentials.user),
+                            )
+                            .into(),
+                        })
+                        .await?;
+
+                    return Err(Error::Unauthorized);
+                }
+            }
+
+            // return the pre-query startup messages
+            connection.send(backend::Message::AuthenticationOk).await?;
+
+            Ok(cluster::Configuration::default()) // FIXME: get from auth step instead
+        }
+        message => Err(Error::Protocol(message)),
+    }
+}
+
+/// Handle generation of a Cluster from a set of leaders and followers
+async fn handle_cluster_generation(
+    leaders: Vec<Endpoint>,
+    followers: Vec<Endpoint>,
+) -> Result<Arc<Cluster>, Error> {
+    let key = (leaders, followers);
+    let clusters = CLUSTERS.read().await;
+    let cluster = match clusters.get(&key) {
+        Some(cluster) => Arc::clone(cluster),
+        None => {
+            drop(clusters);
+
+            let cluster = Cluster::connect(key.0.clone(), key.1.clone())
+                .await
+                .map(Arc::new)?;
+
+            let session_cluster = Arc::clone(&cluster);
+
+            CLUSTERS.write().await.insert(key, cluster);
+
+            session_cluster
+        }
+    };
+
+    Ok(cluster)
+}
+
+/// Handle generation of a Router from a cluster
+async fn handle_router_generation(
+    cluster: Arc<Cluster>,
+    statement_guard: Guard,
+) -> Result<(Router, UnboundedReceiver<backend::Message>), Error> {
+    // flush the cluster's startup messages on session init
+    let (backend_messages, receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    let mut leader = cluster.leader().await?;
+    let startup_messages = leader.startup_messages().await?;
+
+    for message in startup_messages {
+        backend_messages.send(message).map_err(|_| Error::Flush)?;
+    }
+
+    // build a Router from the cluster
+    let router = Router::new(cluster, backend_messages, Arc::new(statement_guard));
+
+    Ok((router, receiver))
+}
+
+/// Forward errors to a TCP Connection as proper Postgres-style backend Messages
+async fn handle_error(
+    connection: &mut tcp::Connection<frontend::Codec>,
+    error: Error,
+) -> Result<Error, Error> {
+    let message = backend::Message::from(&error);
+    connection.send(message).await?;
+    Ok(error)
 }

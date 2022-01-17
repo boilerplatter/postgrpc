@@ -19,6 +19,10 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
+// FIXME: unify in protocol module
+static FEATURE_NOT_SUPPORTED: Bytes = Bytes::from_static(b"0A000");
+static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -31,6 +35,26 @@ pub enum Error {
     Unroutable(frontend::Message),
     #[error("Error syncing messages from the backend to the client")]
     Sync,
+}
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        match error {
+            Error::Cluster(error) => Self::from(error),
+            Error::Connection(error) => Self::from(error),
+            Error::Tcp(error) => Self::from(error),
+            Error::Unroutable(..) => Self::ErrorResponse {
+                code: FEATURE_NOT_SUPPORTED.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Error,
+            },
+            Error::Sync => Self::ErrorResponse {
+                code: CONNECTION_EXCEPTION.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+        }
+    }
 }
 
 /// State of the current transaction, along with its error responses

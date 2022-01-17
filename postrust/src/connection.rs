@@ -23,12 +23,28 @@ use std::{
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 
+// FIXME: Unify error codes in protocol module
+static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
     Tcp(#[from] tcp::Error),
     #[error("Error syncing proxied connection")]
     Sync,
+}
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        match error {
+            Error::Tcp(error) => Self::from(error),
+            Error::Sync => Self::ErrorResponse {
+                code: CONNECTION_EXCEPTION.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Fatal,
+            },
+        }
+    }
 }
 
 pin_project_lite::pin_project! {
