@@ -6,6 +6,7 @@ use crate::{
     router::{self, Router},
     tcp,
 };
+use futures_core::Future;
 use futures_util::{future, stream::SplitStream, SinkExt, StreamExt, TryFutureExt, TryStreamExt};
 use std::sync::Arc;
 use thiserror::Error;
@@ -199,11 +200,15 @@ impl Session {
         })
     }
 
-    /// Broker messages between a Connection and Cluster until the Session ends
-    #[tracing::instrument(skip(self))]
-    pub async fn serve(self) -> Result<(), Error> {
+    /// Broker messages between a Connection and Cluster until a shutdown signal or Session end
+    #[tracing::instrument(skip(self, shutdown))]
+    pub async fn serve<F>(self, shutdown: F) -> Result<(), Error>
+    where
+        F: Future<Output = ()>,
+    {
         self.frontend_messages
             .map_err(Error::Tcp)
+            .take_until(shutdown)
             .try_take_while(|message| match message {
                 frontend::Message::Terminate => {
                     tracing::info!("Session terminated by user");
