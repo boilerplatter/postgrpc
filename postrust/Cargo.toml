@@ -41,6 +41,7 @@ features = ["env-filter"]
 version = "0.3.6"
 
 [dev-dependencies]
+tracing-test = "0.2.1"
 # anyhow = "1.0.52"
 # spekt = "0.1.1"
 

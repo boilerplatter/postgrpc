@@ -120,6 +120,50 @@ impl Message {
                     ))
                 }
             },
+            ERROR_RESPONSE_TAG => {
+                let mut message = ErrorResponseBuilder::default();
+
+                loop {
+                    match buf.read_u8()? {
+                        0 => break,
+                        field_type => {
+                            let field = buf.read_cstr()?;
+
+                            // FIXME: support more error fields
+                            match field_type {
+                                ERROR_SEVERITY_TAG => {
+                                    let severity = match field.as_ref() {
+                                        b"WARNING" => Severity::Warning,
+                                        b"NOTICE" => Severity::Notice,
+                                        b"DEBUG" => Severity::Debug,
+                                        b"ERROR" => Severity::Error,
+                                        b"FATAL" => Severity::Fatal,
+                                        b"PANIC" => Severity::Panic,
+                                        b"INFO" => Severity::Info,
+                                        b"LOG" => Severity::Log,
+                                        _ => {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::InvalidInput,
+                                                "invalid response: invalid error severity",
+                                            ))
+                                        }
+                                    };
+                                    message.severity = Some(severity);
+                                }
+                                ERROR_CODE_TAG => {
+                                    message.code = Some(field);
+                                }
+                                ERROR_MESSAGE_TAG => {
+                                    message.message = Some(field);
+                                }
+                                _ => (),
+                            }
+                        }
+                    }
+                }
+
+                message.finish()?
+            }
             READY_FOR_QUERY_TAG => {
                 let transaction_status = match buf.read_u8()? {
                     b'I' => TransactionStatus::Idle,
@@ -278,12 +322,16 @@ impl Message {
 }
 
 /// Error severity levels
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Severity {
+    Warning,
+    Notice,
+    Debug,
     Error,
     Fatal,
     Panic,
+    Info,
+    Log,
 }
 
 impl Severity {
@@ -292,9 +340,14 @@ impl Severity {
         B: BufMut,
     {
         match self {
+            Self::Warning => bytes.put_slice(b"WARNING"),
+            Self::Notice => bytes.put_slice(b"NOTICE"),
+            Self::Debug => bytes.put_slice(b"DEBUG"),
             Self::Error => bytes.put_slice(b"ERROR"),
             Self::Fatal => bytes.put_slice(b"FATAL"),
             Self::Panic => bytes.put_slice(b"PANIC"),
+            Self::Info => bytes.put_slice(b"INFO"),
+            Self::Log => bytes.put_slice(b"LOG"),
         }
     }
 }
@@ -318,6 +371,45 @@ impl TransactionStatus {
             Self::Transaction => bytes.put_u8(b'T'),
             Self::Error => bytes.put_u8(b'E'),
         }
+    }
+}
+
+/// Helper for building error responses from partial data
+#[derive(Default)]
+struct ErrorResponseBuilder {
+    code: Option<Bytes>,
+    message: Option<Bytes>,
+    severity: Option<Severity>,
+}
+
+impl ErrorResponseBuilder {
+    fn finish(self) -> io::Result<Message> {
+        let code = self.code.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: ErrorResponse missing required field 'code'",
+            )
+        })?;
+
+        let message = self.message.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: ErrorResponse missing required field 'message'",
+            )
+        })?;
+
+        let severity = self.severity.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid message format: ErrorResponse missing required field 'severity'",
+            )
+        })?;
+
+        Ok(Message::ErrorResponse {
+            code,
+            message,
+            severity,
+        })
     }
 }
 
@@ -394,6 +486,9 @@ mod test {
         b"R\0\0\06\0\0\0\x0cv=veUyecS5U3NVXYF2igQ6J6sEKuOqXdeVJg5qoV6oBu0=R\0\0\0\x08\0\0\0\0",
     );
     static READY_FOR_QUERY_MESSAGE: Bytes = Bytes::from_static(b"Z\0\0\0\x05I");
+    static ERROR_RESPONSE_MESSAGE: Bytes = Bytes::from_static(
+        b"E\0\0\0USFATAL\0VFATAL\0C53300\0Msorry, too many clients already\0Fproc.c\0L359\0RInitProcess\0\0"
+    );
 
     #[test]
     fn ignores_empty_bytes() {
@@ -476,6 +571,26 @@ mod test {
             result,
             Message::ReadyForQuery {
                 transaction_status: TransactionStatus::Idle
+            },
+            "Incorrectly parsed valid ReadyForQuery message"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn parses_error_response_messages() {
+        let mut input = BytesMut::new();
+        input.extend_from_slice(&ERROR_RESPONSE_MESSAGE);
+        let result = Message::parse(&mut input)
+            .expect("Error parsing valid message")
+            .expect("Error parsing complete message chunk");
+
+        assert_eq!(
+            result,
+            Message::ErrorResponse {
+                code: "53300".into(),
+                message: "sorry, too many clients already".into(),
+                severity: Severity::Fatal
             },
             "Incorrectly parsed valid ReadyForQuery message"
         );

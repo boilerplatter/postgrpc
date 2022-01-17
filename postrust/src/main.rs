@@ -7,7 +7,7 @@ use tcp::Connections;
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 
-mod authentication;
+// mod authentication;
 mod cluster;
 mod configuration;
 mod connection;
@@ -94,11 +94,11 @@ async fn run_service() -> Result<(), Error> {
             match session {
                 Ok(session) => {
                     if let Err(error) = session.serve().await {
-                        tracing::error!(error = %error, "Closing Session with error");
+                        tracing::error!(error = ?error, "Closing Session with error");
                     }
                 }
                 Err(error) => {
-                    tracing::error!(error = %error, "Failed to start session");
+                    tracing::error!(error = ?error, "Failed to start session");
                 }
             }
         })

@@ -1,5 +1,4 @@
 use crate::{
-    authentication::ClusterConfiguration,
     cluster::{self, Cluster, CLUSTERS},
     connection,
     credentials::{self, Credentials},
@@ -43,6 +42,9 @@ impl Session {
     /// Create a new session
     #[tracing::instrument]
     pub async fn new(mut connection: tcp::Connection<startup::Codec>) -> Result<Self, Error> {
+        // FIXME: convert all errors during startup into backend::Message::ErrorResponses for
+        // better communication with clients before disconnecting
+
         tracing::debug!("Retrieving Session for Connection");
 
         // get the remote address for logging
@@ -86,7 +88,7 @@ impl Session {
         // handle the password verification and client-side auth phase
         let mut connection = tcp::Connection::<frontend::Codec>::from(connection);
 
-        let ClusterConfiguration {
+        let cluster::Configuration {
             leaders,
             followers,
             statement_guard,
@@ -130,7 +132,7 @@ impl Session {
                 // return the pre-query startup messages
                 connection.send(backend::Message::AuthenticationOk).await?;
 
-                Ok(ClusterConfiguration::default()) // FIXME: get from auth step instead
+                Ok(cluster::Configuration::default()) // FIXME: get from auth step instead
             }
             _ => Err(Error::Unauthorized),
         }?;
@@ -160,7 +162,17 @@ impl Session {
         // flush the cluster's startup messages on session init
         let (backend_messages, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        for message in cluster.leader().await?.startup_messages().await? {
+        let mut leader = match cluster.leader().await {
+            // forward TCP-level errors from upstream if possible
+            Err(cluster::Error::Tcp(error)) => {
+                connection.send(backend::Message::from(&error)).await?;
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+            Ok(leader) => leader,
+        };
+
+        for message in leader.startup_messages().await? {
             backend_messages.send(message).map_err(|_| Error::Flush)?;
         }
 

@@ -11,15 +11,22 @@ use std::{
 
 pin_project_lite::pin_project! {
     /// Backend message stream that terminates at the end of a top-level transaction block
-    pub struct Transaction<'a> {
+    pub struct Transaction<'a, S = SplitStream<tcp::Connection<backend::Codec>>>
+    where
+        S: Stream<Item = Result<backend::Message, tcp::Error>>,
+        S: Unpin
+    {
         is_complete: bool,
         #[pin]
-        backend_stream: &'a mut SplitStream<tcp::Connection<backend::Codec>>,
+        backend_stream: &'a mut S,
     }
 }
 
-impl<'a> Transaction<'a> {
-    pub fn new(backend_stream: &'a mut SplitStream<tcp::Connection<backend::Codec>>) -> Self {
+impl<'a, S> Transaction<'a, S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+{
+    pub fn new(backend_stream: &'a mut S) -> Self {
         Self {
             is_complete: false,
             backend_stream,
@@ -27,7 +34,10 @@ impl<'a> Transaction<'a> {
     }
 }
 
-impl<'a> Stream for Transaction<'a> {
+impl<'a, S> Stream for Transaction<'a, S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+{
     type Item = Result<backend::Message, tcp::Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {

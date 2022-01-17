@@ -1,9 +1,12 @@
-use crate::{
-    authentication::authenticate,
-    protocol::{backend, frontend, startup},
+use crate::protocol::{
+    backend,
+    frontend::{self, SASLInitialResponseBody, SASLResponseBody},
+    startup,
 };
+use bytes::Bytes;
 use futures_core::Stream;
-use futures_util::{Sink, SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt, TryStreamExt};
+use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256};
 use std::{
     collections::BTreeMap,
     fmt::{self, Display},
@@ -15,6 +18,11 @@ use std::{
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::{Encoder, Framed};
+
+// FIXME: Unify error codes in protocol module
+static CONNECTION_FAILURE: Bytes = Bytes::from_static(b"08006");
+static CONNECTION_EXCEPTION: Bytes = Bytes::from_static(b"08000");
+static INVALID_PASSWORD: Bytes = Bytes::from_static(b"28P01");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -36,6 +44,49 @@ pub enum Error {
         address: SocketAddr,
         source: std::io::Error,
     },
+    #[error("Error completing SASL authentication handshake: {0}")]
+    Sasl(std::io::Error),
+    #[error("Error response from upstream")]
+    Upstream {
+        code: Bytes,
+        severity: backend::Severity,
+        message: Bytes,
+    },
+}
+
+impl From<&Error> for backend::Message {
+    fn from(error: &Error) -> Self {
+        match error {
+            Error::Accept(..)
+            | Error::Listen { .. }
+            | Error::Read(..)
+            | Error::Write(..)
+            | Error::TcpConnect { .. } => Self::ErrorResponse {
+                code: CONNECTION_FAILURE.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Error,
+            },
+            Error::Sasl(..) => Self::ErrorResponse {
+                code: CONNECTION_EXCEPTION.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Error,
+            },
+            Error::Unauthorized => Self::ErrorResponse {
+                code: INVALID_PASSWORD.clone(),
+                message: error.to_string().into(),
+                severity: backend::Severity::Error,
+            },
+            Error::Upstream {
+                code,
+                severity,
+                message,
+            } => Self::ErrorResponse {
+                code: code.clone(),
+                severity: *severity,
+                message: message.clone(),
+            },
+        }
+    }
 }
 
 /// Stream of new TCP connections from a listener
@@ -140,13 +191,85 @@ impl Connection<backend::Codec> {
             })
             .await?;
 
-        let mut proxied_connection = Connection::<backend::Codec>::from(upstream);
-
-        authenticate(&mut proxied_connection, password.as_bytes())
+        Connection::<backend::Codec>::from(upstream)
+            .authenticate(password.as_bytes())
             .await
-            .map_err(|_| Error::Unauthorized)?;
+    }
 
-        Ok(proxied_connection)
+    /// Authenticate a Connection with SASL
+    #[tracing::instrument(skip(password))]
+    async fn authenticate(mut self, password: &[u8]) -> Result<Self, Error> {
+        match self.try_next().await?.ok_or(Error::Unauthorized)? {
+            backend::Message::AuthenticationSASL { mechanisms } => {
+                let mechanism = mechanisms.first().cloned().ok_or(Error::Unauthorized)?;
+
+                // construct a ScramSha256
+                let channel_binding = ChannelBinding::unrequested(); // is this right?
+                let mut scram_client = ScramSha256::new(password, channel_binding);
+
+                // send out a SASLInitialResponse message
+                self.send(frontend::Message::SASLInitialResponse(
+                    SASLInitialResponseBody {
+                        mechanism,
+                        initial_response: scram_client.message().to_vec().into(),
+                    },
+                ))
+                .await?;
+
+                // wait for the SASL continuation message from upstream
+                match self.try_next().await?.ok_or(Error::Unauthorized)? {
+                    backend::Message::AuthenticationSASLContinue { data } => {
+                        scram_client.update(&data).map_err(Error::Sasl)?;
+                    }
+                    _ => return Err(Error::Unauthorized),
+                }
+
+                // send out a SASLResponse message
+                self.send(frontend::Message::SASLResponse(SASLResponseBody {
+                    data: scram_client.message().to_vec().into(),
+                }))
+                .await?;
+
+                // wait for the final SASL message from upstream
+                match self.try_next().await?.ok_or(Error::Unauthorized)? {
+                    backend::Message::AuthenticationSASLFinal { data } => {
+                        scram_client.finish(&data).map_err(Error::Sasl)?;
+                    }
+                    _ => return Err(Error::Unauthorized),
+                }
+
+                // wait for AuthenticationOk then carry on
+                match self.try_next().await?.ok_or(Error::Unauthorized)? {
+                    backend::Message::AuthenticationOk => (),
+                    _ => return Err(Error::Unauthorized),
+                }
+
+                tracing::debug!("SASL handshake completed");
+            }
+            // forward error responses
+            backend::Message::ErrorResponse {
+                code,
+                severity,
+                message,
+            } => {
+                return Err(Error::Upstream {
+                    code,
+                    severity,
+                    message,
+                })
+            }
+            backend::Message::AuthenticationOk => {
+                // all good, carry on
+            }
+            message => {
+                tracing::warn!(?message, "Unsupported message in authentication");
+                // TODO: support other auth schemes
+                // reject all other responses
+                return Err(Error::Unauthorized);
+            }
+        }
+
+        Ok(self)
     }
 }
 

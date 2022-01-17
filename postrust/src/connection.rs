@@ -9,7 +9,10 @@ use crate::{
 };
 use bytes::Bytes;
 use futures_core::Stream;
-use futures_util::{stream::SplitStream, Sink, SinkExt, StreamExt, TryStreamExt};
+use futures_util::{
+    stream::{poll_fn, SplitStream},
+    Sink, SinkExt, StreamExt,
+};
 use std::{
     collections::HashSet,
     fmt,
@@ -26,38 +29,54 @@ pub enum Error {
     Tcp(#[from] tcp::Error),
     #[error("Error syncing proxied connection")]
     Sync,
-    #[error("Connection closed unexpectedly during startup")]
-    Startup,
 }
 
 pin_project_lite::pin_project! {
     /// Proxied database connection for use with the Pool
-    pub struct Connection {
+    pub struct Connection<S = SplitStream<tcp::Connection<backend::Codec>>>
+    where
+        S: Stream<Item = Result<backend::Message, tcp::Error>>,
+        S: Unpin
+    {
         has_flushed_startup_messages: bool,
         startup_messages: Vec<backend::Message>,
         frontend_sink: UnboundedSender<frontend::Message>,
         prepared_statements: HashSet<Bytes>,
         last_used: Instant,
         #[pin]
-        backend_stream: SplitStream<tcp::Connection<backend::Codec>>,
+        backend_stream: S,
     }
 }
 
-impl Connection {
+impl<S> Connection<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+{
     /// Initialize the startup message cache by running the Connection stream to a ready state
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     async fn initialize_startup_messages(&mut self) -> Result<(), Error> {
         tracing::trace!("Initializing startup messages");
 
-        while !self.has_flushed_startup_messages {
-            self.try_next().await?.ok_or(Error::Startup)?;
-        }
+        // start a watch stream that waits until this Connection has finished initializing
+        let watcher = poll_fn(|context| {
+            if self.has_flushed_startup_messages {
+                return Poll::Ready(None);
+            }
+
+            if self.poll_next_unpin(context).is_ready() {
+                return Poll::Pending;
+            }
+
+            Poll::Ready(Some(()))
+        });
+
+        watcher.for_each(futures_util::future::ready).await;
 
         Ok(())
     }
 
     /// Fetch the startup messages associated with the connection
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub async fn startup_messages(
         &mut self,
     ) -> Result<impl Iterator<Item = backend::Message>, Error> {
@@ -79,19 +98,34 @@ impl Connection {
     }
 
     /// Subscribe to backend messages for an entire top-level transaction
-    #[tracing::instrument]
-    pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
+    #[tracing::instrument(skip(self))]
+    pub async fn transaction(&mut self) -> Result<Transaction<'_, S>, Error> {
         self.initialize_startup_messages().await?;
 
         Ok(Transaction::new(&mut self.backend_stream))
     }
 
     /// Flush the messages in the connection until the next Pending state
-    #[tracing::instrument]
-    pub async fn flush(&mut self) -> Result<Flush<'_>, Error> {
+    #[tracing::instrument(skip(self))]
+    pub async fn flush(&mut self) -> Result<Flush<'_, S>, Error> {
         self.initialize_startup_messages().await?;
 
         Ok(Flush::new(&mut self.backend_stream))
+    }
+
+    #[cfg(test)]
+    /// Construct a new Connection for testing
+    fn new(backend_stream: S) -> Self {
+        let (frontend_sink, _) = tokio::sync::mpsc::unbounded_channel();
+
+        Self {
+            frontend_sink,
+            backend_stream,
+            has_flushed_startup_messages: false,
+            startup_messages: Vec::new(),
+            prepared_statements: HashSet::new(),
+            last_used: Instant::now(),
+        }
     }
 }
 
@@ -159,7 +193,10 @@ impl Sink<frontend::Message> for Connection {
     }
 }
 
-impl Stream for Connection {
+impl<S> Stream for Connection<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+{
     type Item = Result<backend::Message, tcp::Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -206,5 +243,99 @@ impl fmt::Debug for Connection {
             .field("prepared_statements", &self.prepared_statements.len())
             .field("last_used", &self.last_used)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Connection;
+    use crate::protocol::backend::{self, TransactionStatus};
+    use bytes::Bytes;
+    use futures_util::{stream, StreamExt, TryStreamExt};
+
+    static STARTUP_MESSAGES: [backend::Message; 3] = [
+        backend::Message::Forward(Bytes::from_static(b"foo")),
+        backend::Message::Forward(Bytes::from_static(b"bar")),
+        backend::Message::ReadyForQuery {
+            transaction_status: TransactionStatus::Idle,
+        },
+    ];
+
+    static FIRST_MESSAGE: backend::Message =
+        backend::Message::Forward(Bytes::from_static(b"first message"));
+
+    #[tokio::test]
+    async fn caches_startup_messages() {
+        let messages = stream::iter(STARTUP_MESSAGES.clone())
+            .chain(stream::iter([FIRST_MESSAGE.clone()]))
+            .map(Result::Ok);
+
+        let mut connection = Connection::new(messages);
+        let first_message = connection
+            .try_next()
+            .await
+            .expect("Error in Connection stream")
+            .expect("Connection closed unexpectedly");
+
+        assert_eq!(
+            first_message, FIRST_MESSAGE,
+            "Connection failed to transparently cache startup messages before initial message"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn initializes_with_only_startup_messages() {
+        let messages = stream::iter(STARTUP_MESSAGES.clone()).map(Result::Ok);
+
+        Connection::new(messages)
+            .startup_messages()
+            .await
+            .expect("Error initializing startup messages")
+            .for_each(drop)
+    }
+
+    #[tokio::test]
+    async fn returns_startup_messages() {
+        let messages = stream::iter(STARTUP_MESSAGES.clone())
+            .chain(stream::iter([FIRST_MESSAGE.clone()]))
+            .map(Result::Ok);
+
+        let mut connection = Connection::new(messages);
+        let startup_messages: Vec<_> = connection
+            .startup_messages()
+            .await
+            .expect("Error retrieving startup messages")
+            .collect();
+
+        assert_eq!(
+            startup_messages,
+            STARTUP_MESSAGES.to_vec(),
+            "Connection failed to return correct startup messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_transaction_stream() {
+        let messages = stream::iter(STARTUP_MESSAGES.clone())
+            .chain(stream::iter([FIRST_MESSAGE.clone()]))
+            .map(Result::Ok);
+
+        Connection::new(messages)
+            .transaction()
+            .await
+            .expect("Error retrieving Transaction stream");
+    }
+
+    #[tokio::test]
+    async fn returns_flush_stream() {
+        let messages = stream::iter(STARTUP_MESSAGES.clone())
+            .chain(stream::iter([FIRST_MESSAGE.clone()]))
+            .map(Result::Ok);
+
+        Connection::new(messages)
+            .flush()
+            .await
+            .expect("Error retrieving Flush stream");
     }
 }

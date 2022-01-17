@@ -1,20 +1,34 @@
 use crate::{
     endpoint::{Endpoint, Endpoints},
     pool::{self, Pool},
+    tcp,
 };
 use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use once_cell::sync::Lazy;
-use std::{collections::HashMap, sync::Arc};
+use postguard::{AllowedFunctions, AllowedStatements, Guard};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Pool(#[from] pool::Error),
+    Tcp(#[from] tcp::Error),
     #[error("Cluster configuration for the current user is missing a leader")]
     MissingLeader,
 }
+
+/// Timeout for fetching a connection from upstream
+// FIXME: make this configurable
+static POOL_FETCH_TIMEOUT: Duration = Duration::from_millis(1000);
+
+/// Standard delay between retries when fetching from a pool
+// FIXME: make this configurable
+static POOL_FETCH_DELAY: Duration = Duration::from_millis(200);
 
 /// Pooled clusters keyed by configurations
 pub static CLUSTERS: Lazy<RwLock<HashMap<Key, Arc<Cluster>>>> =
@@ -22,6 +36,42 @@ pub static CLUSTERS: Lazy<RwLock<HashMap<Key, Arc<Cluster>>>> =
 
 /// Cluster identifier based on the leaders and follower endpoint configurations
 type Key = (Vec<Endpoint>, Vec<Endpoint>);
+
+// TODO: turn this into a proto for gRPC handlers, too
+/// Configuration for a Cluster of leaders and followers
+#[derive(Debug)]
+pub struct Configuration {
+    pub leaders: Vec<Endpoint>,
+    pub followers: Vec<Endpoint>,
+    pub statement_guard: Guard,
+}
+
+impl Default for Configuration {
+    // FIXME: remove this impl
+    fn default() -> Self {
+        let leader = Endpoint::new(
+            "postgres".into(),
+            "supersecretpassword".into(),
+            "postgres".into(),
+            [127, 0, 0, 1].into(),
+            5432,
+        );
+
+        // FIXME: make this something other than a noop
+        let statement_guard = Guard::new(
+            // AllowedStatements::List(vec![Command::Select]),
+            AllowedStatements::All,
+            AllowedFunctions::All,
+            // AllowedFunctions::List(vec!["to_json".to_string(), "pg_sleep".to_string()]),
+        );
+
+        Self {
+            leaders: vec![leader],
+            followers: vec![],
+            statement_guard,
+        }
+    }
+}
 
 /// Wrapper around the cluster connections for a single auth response
 #[derive(Debug)]
@@ -67,22 +117,56 @@ impl Cluster {
     /// Fetch a single leader connection
     #[tracing::instrument]
     pub async fn leader(&self) -> Result<pool::PooledConnection, Error> {
-        let connections = self.leaders.next().ok_or(Error::MissingLeader)?;
-        let connection = connections.get().await?;
-
-        Ok(connection)
+        fetch_with_retry(&self.leaders).await
     }
 
     /// Fetch a single follower connection, falling back to the leader if no followers have been configured
     #[tracing::instrument]
     pub async fn follower(&self) -> Result<pool::PooledConnection, Error> {
-        match self.followers.next() {
-            Some(connections) => {
-                let connection = connections.get().await?;
-
-                Ok(connection)
-            }
-            None => self.leader().await,
+        if self.followers.is_empty() {
+            self.leader().await
+        } else {
+            fetch_with_retry(&self.followers).await
         }
     }
+}
+
+/// Fetch a single connection from a set of Endpoints with retries
+async fn fetch_with_retry(endpoints: &Endpoints) -> Result<pool::PooledConnection, Error> {
+    let start = Instant::now();
+
+    let connection = loop {
+        let connections = endpoints.next().ok_or(Error::MissingLeader)?;
+
+        match connections.get().await {
+            // FIXME: get rid of the magic error code
+            Err(tcp::Error::Upstream {
+                code,
+                message,
+                severity,
+            }) if code.as_ref() == b"53300" => {
+                // exit early if the retry timeout has expired
+                if Instant::now().duration_since(start) > POOL_FETCH_TIMEOUT {
+                    return Err(Error::Tcp(tcp::Error::Upstream {
+                        code,
+                        message,
+                        severity,
+                    }));
+                }
+
+                // retry after a delay if possible
+                tracing::warn!(
+                    ?code,
+                    ?message,
+                    "Retrying connection after recoverable upstream error"
+                );
+
+                tokio::time::sleep(POOL_FETCH_DELAY).await;
+            }
+            Err(error) => return Err(error.into()),
+            Ok(connection) => break connection,
+        };
+    };
+
+    Ok(connection)
 }

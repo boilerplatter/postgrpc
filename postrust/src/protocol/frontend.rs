@@ -530,14 +530,15 @@ pub struct QueryBody {
 }
 
 impl QueryBody {
-    pub fn new<Q>(query: Q) -> Self
-    where
-        Q: Into<Bytes>,
-    {
-        Self {
-            query: query.into(),
-        }
-    }
+    // FIXME
+    // pub fn new<Q>(query: Q) -> Self
+    // where
+    //     Q: Into<Bytes>,
+    // {
+    //     Self {
+    //         query: query.into(),
+    //     }
+    // }
 
     #[inline]
     pub fn query(&self) -> Bytes {

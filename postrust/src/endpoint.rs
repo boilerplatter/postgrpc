@@ -72,4 +72,9 @@ impl Endpoints {
 
         self.endpoints.get(index % self.endpoints.len())
     }
+
+    /// Iter-like is_empty for checking if the queue is empty
+    pub fn is_empty(&self) -> bool {
+        self.endpoints.is_empty()
+    }
 }
