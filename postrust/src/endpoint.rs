@@ -1,8 +1,6 @@
-use crate::pool::Pool;
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 /// Postrust's only supported protocol version
@@ -49,32 +47,16 @@ impl fmt::Debug for Endpoint {
     }
 }
 
-/// Cyclical collection of connection pools for each set of endpoints in a cluster
-/// for round-robin style load balancing between endpoints
-#[derive(Debug)]
-pub struct Endpoints {
-    index: AtomicUsize,
-    endpoints: Vec<Pool>,
-}
-
-impl Endpoints {
-    /// Create a new round-robin endpoint balancer over pooled connections
-    pub fn new(endpoints: Vec<Pool>) -> Self {
+#[cfg(test)]
+impl Default for Endpoint {
+    fn default() -> Self {
         Self {
-            index: AtomicUsize::new(0),
-            endpoints,
+            user: String::new(),
+            password: String::new(),
+            database: String::new(),
+            host: IpAddr::V4([127, 0, 0, 1].into()),
+            port: 5432,
+            protocol_version: SUPPORTED_PROTOCOL_VERSION,
         }
-    }
-
-    /// Iter-like next for selecting the next endpoint in the Round Robin queue
-    pub fn next(&self) -> Option<&Pool> {
-        let index = self.index.fetch_add(1, Ordering::Relaxed);
-
-        self.endpoints.get(index % self.endpoints.len())
-    }
-
-    /// Iter-like is_empty for checking if the queue is empty
-    pub fn is_empty(&self) -> bool {
-        self.endpoints.is_empty()
     }
 }

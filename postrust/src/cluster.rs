@@ -1,7 +1,11 @@
 use crate::{
-    endpoint::{Endpoint, Endpoints},
-    pool::{self, Pool},
-    protocol::{backend, errors::CONNECTION_DOES_NOT_EXIST},
+    connection::Connection,
+    endpoint::Endpoint,
+    pool::{Pool, Pooled, PooledObject, Pools},
+    protocol::{
+        backend,
+        errors::{CONNECTION_DOES_NOT_EXIST, TOO_MANY_CONNECTIONS},
+    },
     tcp,
 };
 use futures_util::{stream::FuturesUnordered, TryStreamExt};
@@ -9,6 +13,7 @@ use once_cell::sync::Lazy;
 use postguard::{AllowedFunctions, AllowedStatements, Guard};
 use std::{
     collections::HashMap,
+    fmt,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -88,14 +93,17 @@ impl Default for Configuration {
 }
 
 /// Wrapper around the cluster connections for a single auth response
-#[derive(Debug)]
-pub struct Cluster {
-    leaders: Endpoints,
-    followers: Endpoints,
+pub struct Cluster<P = Connection>
+where
+    P: Pooled<Error = tcp::Error>,
+    P::Configuration: fmt::Debug,
+{
+    leaders: Pools<P>,
+    followers: Pools<P>,
 }
 
+/// Implement methods specific to TCP-based database Connections
 impl Cluster {
-    /// Create a new load-balanced cluster from sets of leader and follower endpoints
     #[tracing::instrument]
     pub async fn connect(leaders: Vec<Endpoint>, followers: Vec<Endpoint>) -> Result<Self, Error> {
         // guard against empty leader configurations
@@ -104,7 +112,7 @@ impl Cluster {
         }
 
         // store the endpoints and connections for later use
-        let proxied_leaders = Endpoints::new(
+        let proxied_leaders = Pools::new(
             leaders
                 .into_iter()
                 .map(Pool::new)
@@ -113,7 +121,7 @@ impl Cluster {
                 .await?,
         );
 
-        let proxied_followers = Endpoints::new(
+        let proxied_followers = Pools::new(
             followers
                 .into_iter()
                 .map(Pool::new)
@@ -127,16 +135,21 @@ impl Cluster {
             followers: proxied_followers,
         })
     }
+}
 
-    /// Fetch a single leader connection
+/// Implement methods for all pool types
+impl<P> Cluster<P>
+where
+    P: Pooled<Error = tcp::Error>,
+    P::Configuration: fmt::Debug,
+{
     #[tracing::instrument]
-    pub async fn leader(&self) -> Result<pool::PooledConnection, Error> {
+    pub async fn leader(&self) -> Result<PooledObject<P>, Error> {
         fetch_with_retry(&self.leaders).await
     }
 
-    /// Fetch a single follower connection, falling back to the leader if no followers have been configured
     #[tracing::instrument]
-    pub async fn follower(&self) -> Result<pool::PooledConnection, Error> {
+    pub async fn follower(&self) -> Result<PooledObject<P>, Error> {
         if self.followers.is_empty() {
             self.leader().await
         } else {
@@ -145,20 +158,53 @@ impl Cluster {
     }
 }
 
+/// Implement test-specific methods
+#[cfg(test)]
+impl<P> Cluster<P>
+where
+    P: Pooled<Error = tcp::Error> + 'static,
+    P::Configuration: Default + fmt::Debug,
+{
+    /// Handle creation of test cluster from a poolable object
+    pub fn test(object: P) -> Self {
+        let leaders = Pools::new(vec![Pool::test(object)]);
+        let followers = Pools::new(vec![]);
+
+        Self { leaders, followers }
+    }
+}
+
+impl<P> fmt::Debug for Cluster<P>
+where
+    P: Pooled<Error = tcp::Error>,
+    P::Configuration: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("Cluster")
+            .field("leaders", &self.leaders)
+            .field("followers", &self.leaders)
+            .finish()
+    }
+}
+
 /// Fetch a single connection from a set of Endpoints with retries
-async fn fetch_with_retry(endpoints: &Endpoints) -> Result<pool::PooledConnection, Error> {
+async fn fetch_with_retry<P>(endpoints: &Pools<P>) -> Result<PooledObject<P>, Error>
+where
+    P: Pooled<Error = tcp::Error>,
+    P::Configuration: fmt::Debug,
+{
     let start = Instant::now();
 
     let connection = loop {
         let connections = endpoints.next().ok_or(Error::MissingLeader)?;
 
         match connections.get().await {
-            // FIXME: get rid of the magic error code
             Err(tcp::Error::Upstream {
                 code,
                 message,
                 severity,
-            }) if code.as_ref() == b"53300" => {
+            }) if code.as_ref() == TOO_MANY_CONNECTIONS => {
                 // exit early if the retry timeout has expired
                 if Instant::now().duration_since(start) > POOL_FETCH_TIMEOUT {
                     return Err(Error::Tcp(tcp::Error::Upstream {

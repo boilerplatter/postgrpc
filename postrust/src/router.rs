@@ -1,7 +1,7 @@
 use crate::{
     cluster::{self, Cluster},
-    connection,
-    pool::PooledConnection,
+    connection::{self, Connection},
+    pool::{Pooled, PooledObject},
     protocol::{
         backend,
         errors::{
@@ -13,15 +13,20 @@ use crate::{
     tcp,
 };
 use bytes::Bytes;
-use futures_util::{SinkExt, TryStreamExt};
+use futures_core::Stream;
+use futures_util::{stream::SplitStream, Sink, SinkExt, TryStreamExt};
 use postguard::Guard;
 use std::{
     collections::{hash_map::DefaultHasher, BTreeMap},
+    fmt,
     hash::{Hash, Hasher},
     sync::Arc,
 };
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
+
+/// Unnamed statement bytes for invalidating prepared statement cache
+static UNNAMED_PREPARED_STATEMENT: Bytes = Bytes::from_static(b"");
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -58,20 +63,29 @@ impl From<&Error> for backend::Message {
 }
 
 /// State of the current transaction, along with its error responses
-#[derive(Debug)]
-enum TransactionMode {
+enum TransactionMode<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    Connection<S>: Pooled<Error = tcp::Error>,
+    <Connection<S> as Pooled>::Configuration: fmt::Debug,
+{
     InProgress {
-        connection: PooledConnection,
+        connection: PooledObject<Connection<S>>,
     },
     IgnoreTillSync {
         code: Bytes,
         message: Bytes,
         severity: backend::Severity,
-        connection: PooledConnection,
+        connection: PooledObject<Connection<S>>,
     },
 }
 
-impl TransactionMode {
+impl<S> TransactionMode<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    Connection<S>: Pooled<Error = tcp::Error>,
+    <Connection<S> as Pooled>::Configuration: fmt::Debug,
+{
     fn into_error(self, code: Bytes, message: Bytes, severity: backend::Severity) -> Self {
         let connection = match self {
             Self::InProgress { connection } => connection,
@@ -87,10 +101,39 @@ impl TransactionMode {
     }
 }
 
+impl<S> fmt::Debug for TransactionMode<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    Connection<S>: Pooled<Error = tcp::Error>,
+    <Connection<S> as Pooled>::Configuration: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::InProgress { .. } => formatter.debug_struct("InProgress").finish(),
+            Self::IgnoreTillSync {
+                code,
+                message,
+                severity,
+                ..
+            } => formatter
+                .debug_struct("IgnoreTillSync")
+                .field("code", &code)
+                .field("message", &message)
+                .field("severity", &severity)
+                .finish(),
+        }
+    }
+}
+
 /// Frontend message router to a single Cluster
-pub struct Router {
+pub struct Router<S = SplitStream<tcp::Connection<backend::Codec>>>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    Connection<S>: Pooled<Error = tcp::Error> + Sink<frontend::Message, Error = connection::Error>,
+    <Connection<S> as Pooled>::Configuration: fmt::Debug,
+{
     /// Reference to the Cluster where messages should be routed
-    cluster: Arc<Cluster>,
+    cluster: Arc<Cluster<Connection<S>>>,
     /// Message broker for aggregating backend messages from the Cluster
     backend_messages: UnboundedSender<backend::Message>,
     /// Postrust-based Guard for rejecting disallowed statements
@@ -99,13 +142,18 @@ pub struct Router {
     // FIXME: provide DEALLOCATE mechanism (either here or in the cluster through refcounts)
     named_statements: Mutex<BTreeMap<Bytes, ParseBody>>,
     /// An active transaction and its dedicated connection for when the session is in a transaction
-    transaction: Mutex<Option<TransactionMode>>,
+    transaction: Mutex<Option<TransactionMode<S>>>,
 }
 
-impl Router {
+impl<S> Router<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    Connection<S>: Pooled<Error = tcp::Error> + Sink<frontend::Message, Error = connection::Error>,
+    <Connection<S> as Pooled>::Configuration: fmt::Debug,
+{
     /// Initialize a new Router
     pub fn new(
-        cluster: Arc<Cluster>,
+        cluster: Arc<Cluster<Connection<S>>>,
         backend_messages: UnboundedSender<backend::Message>,
         statement_guard: Arc<Guard>,
     ) -> Self {
@@ -168,7 +216,6 @@ impl Router {
                         *transaction = Some(transaction_mode.into_error(code, message, severity));
                     }
                     None => {
-                        // FIXME: encapsulate this as a "frontend reset" function or somesuch
                         // send back an error response directly
                         self.backend_messages
                             .send(backend::Message::ErrorResponse {
@@ -198,43 +245,44 @@ impl Router {
         // handle each message type as needed
         match message {
             frontend::Message::Parse(mut body) => {
-                // check that the statement doesn't already exist
+                // check that the statement doesn't already exist (skipping unnamed statement)
                 let client_name = body.name();
-                let named_statements = self.named_statements.lock().await;
-                if named_statements.get(&client_name).is_some() {
-                    // FIXME: handle the "unnamed statement" case
-                    // (which can be overwritten without error)
-                    let code = DUPLICATE_PREPARED_STATEMENT.clone();
-                    let name = String::from_utf8_lossy(&client_name);
-                    let message = format!(r#"Prepared statement "{name}" already exists"#).into();
 
-                    // put the session into an ignore_till_sync transaction
-                    let mut transaction = self.transaction.lock().await;
+                if !client_name.is_empty() {
+                    let named_statements = self.named_statements.lock().await;
 
-                    match transaction.take() {
-                        Some(transaction_mode) => {
-                            *transaction = Some(transaction_mode.into_error(
-                                code,
-                                message,
-                                backend::Severity::Error,
-                            ));
+                    if named_statements.get(&client_name).is_some() {
+                        let code = DUPLICATE_PREPARED_STATEMENT.clone();
+                        let name = String::from_utf8_lossy(&client_name);
+                        let message =
+                            format!(r#"Prepared statement "{name}" already exists"#).into();
+
+                        // put the session into an ignore_till_sync transaction
+                        let mut transaction = self.transaction.lock().await;
+
+                        match transaction.take() {
+                            Some(transaction_mode) => {
+                                *transaction = Some(transaction_mode.into_error(
+                                    code,
+                                    message,
+                                    backend::Severity::Error,
+                                ));
+                            }
+                            None => {
+                                let connection = self.cluster.follower().await?;
+
+                                *transaction = Some(TransactionMode::IgnoreTillSync {
+                                    code,
+                                    message,
+                                    connection,
+                                    severity: backend::Severity::Error,
+                                });
+                            }
                         }
-                        None => {
-                            let connection = self.cluster.follower().await?;
 
-                            *transaction = Some(TransactionMode::IgnoreTillSync {
-                                code,
-                                message,
-                                connection,
-                                severity: backend::Severity::Error,
-                            });
-                        }
-                    }
-
-                    return Ok(());
-                };
-
-                drop(named_statements);
+                        return Ok(());
+                    };
+                }
 
                 // hash the parse body components to get a new statement name
                 let parameter_types = body.parameter_types();
@@ -245,7 +293,7 @@ impl Router {
 
                 // prepare a Parse message with new statement name
                 body.name = hash.to_string().into();
-                let parse_message = frontend::Message::Parse(body.clone()); // FIXME: avoid clone
+                let parse_message = frontend::Message::Parse(body.clone());
 
                 // initialize a transaction if one doesn't exist
                 let mut transaction = self.transaction.lock().await;
@@ -264,7 +312,6 @@ impl Router {
                 drop(transaction);
 
                 // store the parse message body for later
-                // FIXME: store eagerly in the first check
                 let mut named_statements = self.named_statements.lock().await;
 
                 named_statements.insert(client_name, body);
@@ -581,6 +628,13 @@ impl Router {
                 // (i.e. order of responses is maintained, even between transactions!)
                 // if this is a queue, consider removing the concurrency from message parsing, too
 
+                // reset the unnamed prepared statement if one exists
+                let mut named_statements = self.named_statements.lock().await;
+
+                named_statements.remove(&UNNAMED_PREPARED_STATEMENT);
+
+                drop(named_statements);
+
                 // route to the proper connection based on the message type
                 let mut connection = if is_read_only {
                     self.cluster.follower().await?
@@ -606,5 +660,82 @@ impl Router {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Router;
+    use crate::{
+        cluster::Cluster,
+        connection::Connection,
+        protocol::{
+            backend::{self, TransactionStatus},
+            errors::DUPLICATE_PREPARED_STATEMENT,
+            frontend::{self, ParseBody},
+        },
+        tcp,
+    };
+    use bytes::Bytes;
+    use futures_util::{future, stream, StreamExt};
+    use postguard::Guard;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn rejects_duplicate_named_prepared_statements() {
+        // create a mock connection
+        let messages = stream::once(future::ok::<_, tcp::Error>(
+            backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle,
+            },
+        ))
+        .boxed();
+
+        let connection = Connection::new(messages);
+
+        // create a mock router
+        let (transmitter, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let guard = Arc::new(Guard::default());
+        let cluster = Arc::new(Cluster::test(connection));
+        let router = Router::new(cluster, transmitter, guard);
+
+        // route a identical PARSE messages with a name
+        let body = ParseBody::new(
+            Bytes::from_static(b"foo"),
+            Bytes::from_static(b"select $1"),
+            vec![],
+        );
+
+        let message = frontend::Message::Parse(body);
+
+        router
+            .route(message.clone())
+            .await
+            .expect("Error routing valid PARSE message");
+
+        // route an identical PARSE message
+        router
+            .route(message)
+            .await
+            .expect("Error routing valid PARSE message");
+
+        router
+            .route(frontend::Message::Sync)
+            .await
+            .expect("Error routing valid SYNC message");
+
+        // expect a DUPLICATE_PREPARED_STATEMENT error
+        match receiver
+            .recv()
+            .await
+            .expect("Failed to receive message after duplicate PARSE")
+        {
+            backend::Message::ErrorResponse { code, .. } => assert_eq!(
+                code, DUPLICATE_PREPARED_STATEMENT,
+                "Incorrect error code in ErrorResponse"
+            ),
+            message => panic!("Expected ErrorResponse, found {:?}", message),
+        }
     }
 }

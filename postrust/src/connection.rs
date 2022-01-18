@@ -1,5 +1,7 @@
 use crate::{
+    endpoint::Endpoint,
     flush::Flush,
+    pool::Pooled,
     protocol::{
         backend::{self, TransactionStatus},
         errors::CONNECTION_EXCEPTION,
@@ -107,7 +109,7 @@ where
     }
 
     /// Update the tracked last use of the Connection
-    pub fn update_last_used(&mut self) {
+    fn update_last_used(&mut self) {
         self.last_used = Instant::now()
     }
 
@@ -129,8 +131,14 @@ where
 
     #[cfg(test)]
     /// Construct a new Connection for testing
-    fn new(backend_stream: S) -> Self {
-        let (frontend_sink, _) = tokio::sync::mpsc::unbounded_channel();
+    pub fn new(backend_stream: S) -> Self {
+        let (frontend_sink, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            while let Some(_message) = receiver.recv().await {
+                tracing::debug!("Message heard in test Connection");
+            }
+        });
 
         Self {
             frontend_sink,
@@ -140,6 +148,34 @@ where
             prepared_statements: HashSet::new(),
             last_used: Instant::now(),
         }
+    }
+}
+
+/// Make TCP-based Connections poolable by a Pool
+#[async_trait::async_trait]
+impl Pooled for Connection {
+    type Configuration = Endpoint;
+    type Error = tcp::Error;
+
+    /// Handle TCP connection during Connection creation
+    #[tracing::instrument]
+    async fn create(endpoint: &Self::Configuration) -> Result<Self, Self::Error> {
+        tracing::info!("Adding Connection for Endpoint");
+
+        let tcp_connection = tcp::Connection::<backend::Codec>::connect(
+            endpoint.address(),
+            endpoint.user.to_string(),
+            endpoint.password.to_string(),
+            endpoint.database.to_string(),
+        )
+        .await?;
+
+        Ok(Self::from(tcp_connection))
+    }
+
+    /// Update the Connection's last use
+    fn update(&mut self) {
+        self.update_last_used();
     }
 }
 
@@ -175,7 +211,10 @@ impl From<tcp::Connection<backend::Codec>> for Connection {
     }
 }
 
-impl Sink<frontend::Message> for Connection {
+impl<S> Sink<frontend::Message> for Connection<S>
+where
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+{
     type Error = Error;
 
     fn poll_ready(self: Pin<&mut Self>, _: &mut Context) -> Poll<Result<(), Self::Error>> {
@@ -183,10 +222,9 @@ impl Sink<frontend::Message> for Connection {
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: frontend::Message) -> Result<(), Self::Error> {
-        // FIXME: handle Query with "prepare" commands, too
-        // should this be a part of the Sink implementation, or something that can be tested from
-        // the caller's perspective?
+        // FIXME: handle explicit "prepare" commands (e.g. through Query)
         if let frontend::Message::Parse(ref body) = &item {
+            // check hash of contents/prepared statement names for previous inserts
             let is_first_insert = self.prepared_statements.insert(body.name());
 
             // skip forwarding Parse messages after the first time
@@ -263,8 +301,13 @@ impl fmt::Debug for Connection {
 #[cfg(test)]
 mod test {
     use super::Connection;
-    use crate::protocol::backend::{self, TransactionStatus};
+    use crate::{
+        pool::Pooled,
+        protocol::backend::{self, TransactionStatus},
+        tcp,
+    };
     use bytes::Bytes;
+    use futures_core::stream::BoxStream;
     use futures_util::{stream, StreamExt, TryStreamExt};
 
     static STARTUP_MESSAGES: [backend::Message; 3] = [
@@ -277,6 +320,17 @@ mod test {
 
     static FIRST_MESSAGE: backend::Message =
         backend::Message::Forward(Bytes::from_static(b"first message"));
+
+    /// Inject the backend stream through configuration for testing
+    #[async_trait::async_trait]
+    impl<'a> Pooled for Connection<BoxStream<'a, Result<backend::Message, tcp::Error>>> {
+        type Configuration = ();
+        type Error = tcp::Error;
+
+        async fn create(_configuration: &Self::Configuration) -> Result<Self, Self::Error> {
+            unreachable!("Attempted to create a mocked Connection");
+        }
+    }
 
     #[tokio::test]
     async fn caches_startup_messages() {

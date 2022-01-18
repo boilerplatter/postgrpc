@@ -491,19 +491,25 @@ pub struct ParseBody {
 }
 
 impl ParseBody {
-    #[inline]
     pub fn name(&self) -> Bytes {
         self.name.slice(..)
     }
 
-    #[inline]
     pub fn query(&self) -> Bytes {
         self.query.slice(..)
     }
 
-    #[inline]
     pub fn parameter_types(&self) -> &[i32] {
         &self.parameter_types
+    }
+
+    #[cfg(test)]
+    pub fn new(name: Bytes, query: Bytes, parameter_types: Vec<i32>) -> Self {
+        Self {
+            name,
+            query,
+            parameter_types,
+        }
     }
 }
 

@@ -1161,6 +1161,7 @@ dependencies = [
 name = "postrust"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "byteorder",
  "bytes",
  "envy",
