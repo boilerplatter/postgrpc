@@ -35,14 +35,15 @@ enum Error {
 
 /// TODO:
 /// 1. Make sure that queries are properly queued (and isolated) within a session
-/// 2. Handle unnamed prepared statements and portals
-/// 3. Handle deallocation of prepared statements on a Connection
-/// 4. Handle explicit transactions (i.e. BEGIN + END)
-/// 5. AST-aware plugins (powered by libpg_query): map, filter, route -> perhaps in helix-inspired
+/// 2. Handle deallocation of prepared statements on a Connection
+/// 3. Handle explicit transactions (i.e. BEGIN + END)
+/// 4. AST-aware plugins (powered by libpg_query): map, filter, route -> perhaps in helix-inspired
 ///    WASI setup?
-/// 6. implement basic cache layer (in conjunction with AST plugin system, perhaps?)
-/// 7. test all of the above
-/// 8. benchmark all of the above
+/// 5. make sure that in-flight transactions properly handle routing to leaders versus followers
+/// 6. support all message types
+/// 7. implement basic cache layer (in conjunction with AST plugin system, perhaps?)
+/// 8. test all of the above
+/// 9. benchmark all of the above
 
 /// Run each session with a shutdown signal
 async fn handle_session<S>(session: Result<Session, session::Error>, shutdown: S)

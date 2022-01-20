@@ -1,4 +1,4 @@
-use crate::{connection::Connection, endpoint::Endpoint, tcp};
+use crate::{connection::Connection, tcp};
 use std::{
     fmt,
     ops::{Deref, DerefMut},
@@ -9,10 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
-
-// FIXME: make this configurable
-/// Length of time that a Connection can be idle before getting cleaned up
-const IDLE_CONNECTION_DURATION: Duration = Duration::from_secs(5);
 
 /// Asynchronous pool for generic pooled objects, including database connections
 pub struct Pool<P = Connection>
@@ -32,12 +28,71 @@ where
 /// Implement shared methods over any poolable object
 impl<P> Pool<P>
 where
-    P: Pooled,
+    P: Pooled + 'static,
     P::Configuration: fmt::Debug,
     tcp::Error: From<P::Error>,
 {
+    /// Create a new Pool from a configuration
+    #[tracing::instrument]
+    pub fn new(configuration: P::Configuration) -> Result<Self, tcp::Error> {
+        Self::new_with_objects(configuration, vec![])
+    }
+
+    /// Create a new pool from a configuration and set of objects
+    // used internally for testing
+    #[tracing::instrument(skip(objects))]
+    pub(crate) fn new_with_objects(
+        configuration: P::Configuration,
+        objects: Vec<P>,
+    ) -> Result<Self, tcp::Error> {
+        let objects = Arc::new(Mutex::new(objects));
+
+        // periodically clean up idle objects
+        tokio::spawn({
+            let objects = objects.clone();
+
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    let now = Instant::now();
+
+                    let mut objects = objects.lock().await;
+
+                    objects.retain(|object: &P| !object.should_drop(&now));
+                }
+            }
+        });
+
+        // periodically return objects to the pool
+        let (returning_objects, mut returning_objects_receiver) =
+            tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn({
+            let objects = objects.clone();
+
+            async move {
+                while let Some(object) = returning_objects_receiver.recv().await {
+                    let mut objects = objects.lock().await;
+
+                    objects.push(object);
+
+                    tracing::debug!(objects = objects.len(), "Object returned to the Pool");
+                }
+            }
+        });
+
+        tracing::info!("Pool initialized");
+
+        Ok(Self {
+            configuration,
+            objects,
+            returning_objects,
+        })
+    }
+
     /// Fetch an existing idle object from the pool (LIFO) or initialize a new one
-    #[tracing::instrument(skip(self))] // FIXME: stop skipping self
+    #[tracing::instrument]
     pub async fn get(&self) -> Result<PooledObject<P>, tcp::Error> {
         let mut objects = self.objects.lock().await;
 
@@ -55,91 +110,6 @@ where
         Ok(PooledObject {
             object: Some(object),
             return_sender: self.returning_objects.clone(),
-        })
-    }
-}
-
-/// Implement test-specific methods
-#[cfg(test)]
-impl<P> Pool<P>
-where
-    P: Pooled + 'static,
-    P::Configuration: Default + fmt::Debug,
-    tcp::Error: From<P::Error>,
-{
-    /// Handle creation of test Pool from a single test object
-    pub fn test(object: P) -> Self {
-        let (transmitter, mut reciever) = tokio::sync::mpsc::unbounded_channel();
-        let objects = Arc::new(Mutex::new(vec![object]));
-        let configuration = P::Configuration::default();
-
-        tokio::spawn(async move {
-            while let Some(_message) = reciever.recv().await {
-                tracing::debug!("Test message recieved");
-            }
-        });
-
-        Self {
-            configuration,
-            objects,
-            returning_objects: transmitter,
-        }
-    }
-}
-
-/// Implement methods specifically for TCP-based database Connections
-impl Pool<Connection> {
-    /// Create a new Pool for an Endpoint
-    #[tracing::instrument]
-    pub async fn new(endpoint: Endpoint) -> Result<Self, tcp::Error> {
-        let connections = Arc::new(Mutex::new(vec![]));
-
-        // periodically clean up idle connections
-        tokio::spawn({
-            let connections = connections.clone();
-
-            async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-
-                    let now = Instant::now();
-
-                    let mut connections = connections.lock().await;
-
-                    connections.retain(|connection: &Connection| {
-                        now.duration_since(connection.last_used()) < IDLE_CONNECTION_DURATION
-                    });
-                }
-            }
-        });
-
-        // periodically return connections to the pool
-        let (returning_connections, mut returning_connections_receiver) =
-            tokio::sync::mpsc::unbounded_channel();
-
-        tokio::spawn({
-            let connections = connections.clone();
-
-            async move {
-                while let Some(connection) = returning_connections_receiver.recv().await {
-                    let mut connections = connections.lock().await;
-
-                    connections.push(connection);
-
-                    tracing::debug!(
-                        connections = connections.len(),
-                        "Connection returned to the Pool"
-                    );
-                }
-            }
-        });
-
-        tracing::info!("Connection pool initialized");
-
-        Ok(Self {
-            configuration: endpoint,
-            objects: connections,
-            returning_objects: returning_connections,
         })
     }
 }
@@ -224,6 +194,11 @@ pub trait Pooled: Sized + Send {
 
     /// Update hook for the pooled object, called on Drop
     fn update(&mut self) {}
+
+    /// Handle for deciding if a pooled object should be dropped by the Pool
+    fn should_drop(&self, _drop_time: &Instant) -> bool {
+        false // by default, do no clean up
+    }
 }
 
 /// Wrapper around objects managed by a Pool for managing lifecycles
@@ -269,7 +244,7 @@ where
             object.update();
 
             if let Err(error) = self.return_sender.send(object) {
-                tracing::warn!(%error, "Error returning Connection to Pool");
+                tracing::warn!(%error, "Error returning Object to Pool");
             }
         }
     }

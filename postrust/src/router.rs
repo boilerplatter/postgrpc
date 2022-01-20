@@ -16,12 +16,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use futures_util::{stream::SplitStream, Sink, SinkExt, TryStreamExt};
 use postguard::Guard;
-use std::{
-    collections::{hash_map::DefaultHasher, BTreeMap},
-    fmt,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
@@ -147,7 +142,7 @@ where
 
 impl<S> Router<S>
 where
-    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
+    S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin + 'static,
     Connection<S>: Pooled<Error = tcp::Error> + Sink<frontend::Message, Error = connection::Error>,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
 {
@@ -201,42 +196,39 @@ where
         }
 
         // guard message types and their payloads
-        let statement = match message.guard(&self.statement_guard) {
-            Err(error) => {
-                tracing::warn!(reason = %error, "Statement rejected");
+        if let Err(error) = message.guard(&self.statement_guard) {
+            tracing::warn!(reason = %error, "Statement rejected");
 
-                let code = INSUFFICIENT_PRIVILEGE.clone();
-                let message = error.to_string().into();
-                let severity = backend::Severity::Error;
-                let mut transaction = self.transaction.lock().await;
+            let code = INSUFFICIENT_PRIVILEGE.clone();
+            let message = error.to_string().into();
+            let severity = backend::Severity::Error;
+            let mut transaction = self.transaction.lock().await;
 
-                match transaction.take() {
-                    Some(transaction_mode) => {
-                        // put the transaction into an error state
-                        *transaction = Some(transaction_mode.into_error(code, message, severity));
-                    }
-                    None => {
-                        // send back an error response directly
-                        self.backend_messages
-                            .send(backend::Message::ErrorResponse {
-                                code,
-                                message,
-                                severity,
-                            })
-                            .map_err(|_| Error::Sync)?;
-
-                        // return a ReadyForQuery message
-                        self.backend_messages
-                            .send(backend::Message::ReadyForQuery {
-                                transaction_status: backend::TransactionStatus::Idle,
-                            })
-                            .map_err(|_| Error::Sync)?;
-                    }
+            match transaction.take() {
+                Some(transaction_mode) => {
+                    // put the transaction into an error state
+                    *transaction = Some(transaction_mode.into_error(code, message, severity));
                 }
+                None => {
+                    // send back an error response directly
+                    self.backend_messages
+                        .send(backend::Message::ErrorResponse {
+                            code,
+                            message,
+                            severity,
+                        })
+                        .map_err(|_| Error::Sync)?;
 
-                return Ok(());
+                    // return a ReadyForQuery message
+                    self.backend_messages
+                        .send(backend::Message::ReadyForQuery {
+                            transaction_status: backend::TransactionStatus::Idle,
+                        })
+                        .map_err(|_| Error::Sync)?;
+                }
             }
-            Ok(statement) => statement,
+
+            return Ok(());
         };
 
         // FIXME: implement this method just for ParseBody and QueryBody (right?)
@@ -285,14 +277,10 @@ where
                 }
 
                 // hash the parse body components to get a new statement name
-                let parameter_types = body.parameter_types();
-                let mut state = DefaultHasher::new();
-                statement.hash(&mut state);
-                parameter_types.hash(&mut state);
-                let hash = state.finish();
+                let hash = body.hash();
 
                 // prepare a Parse message with new statement name
-                body.name = hash.to_string().into();
+                body.name = hash;
                 let parse_message = frontend::Message::Parse(body.clone());
 
                 // initialize a transaction if one doesn't exist
@@ -519,75 +507,55 @@ where
                 // verify that SYNC is already in a transaction
                 let mut transaction = self.transaction.lock().await;
 
-                match transaction.take() {
-                    Some(transaction_mode) => {
-                        match transaction_mode {
-                            TransactionMode::InProgress { mut connection } => {
-                                // flush the transaction output on SYNC
-                                connection.send(frontend::Message::Sync).await?;
+                if let Some(transaction_mode) = transaction.take() {
+                    match transaction_mode {
+                        TransactionMode::InProgress { mut connection } => {
+                            // flush the transaction output on SYNC
+                            connection.send(frontend::Message::Sync).await?;
 
-                                let mut transaction = connection.transaction().await?;
+                            let mut transaction = connection.transaction().await?;
 
-                                while let Some(message) = transaction.try_next().await? {
-                                    self.backend_messages.send(message).map_err(|error| {
-                                        tracing::error!(
-                                            ?error,
-                                            "Failed to send backend message in SYNC"
-                                        );
-
-                                        Error::Sync
-                                    })?;
-                                }
-                            }
-                            TransactionMode::IgnoreTillSync {
-                                code,
-                                message,
-                                mut connection,
-                                severity,
-                            } => {
-                                // flush the transaction output on SYNC
-                                connection.send(frontend::Message::Sync).await?;
-
-                                let mut transaction = connection.transaction().await?;
-
-                                while let Some(message) = transaction.try_next().await? {
-                                    self.backend_messages
-                                        .send(message)
-                                        .map_err(|_| Error::Sync)?;
-                                }
-
-                                // send back error responses from session errors
+                            while let Some(message) = transaction.try_next().await? {
                                 self.backend_messages
-                                    .send(backend::Message::ErrorResponse {
-                                        code,
-                                        message,
-                                        severity,
-                                    })
+                                    .send(message)
                                     .map_err(|_| Error::Sync)?;
                             }
                         }
+                        TransactionMode::IgnoreTillSync {
+                            code,
+                            message,
+                            mut connection,
+                            severity,
+                        } => {
+                            // flush the transaction output on SYNC
+                            connection.send(frontend::Message::Sync).await?;
 
-                        // let the frontend know that another transaction can be started
-                        self.backend_messages
-                            .send(backend::Message::ReadyForQuery {
-                                transaction_status: backend::TransactionStatus::Idle,
-                            })
-                            .map_err(|_| Error::Sync)?;
+                            let mut transaction = connection.transaction().await?;
 
-                        // reset the internal transaction state
-                        *transaction = None;
-                    }
-                    None => {
-                        // let the user know about the invalid transaction state
-                        self.backend_messages
-                            .send(backend::Message::ErrorResponse {
-                                code: INVALID_TRANSACTION_STATE.clone(),
-                                message: "Invalid transaction state".into(),
-                                severity: backend::Severity::Error,
-                            })
-                            .map_err(|_| Error::Sync)?;
+                            while let Some(message) = transaction.try_next().await? {
+                                self.backend_messages
+                                    .send(message)
+                                    .map_err(|_| Error::Sync)?;
+                            }
+
+                            // send back error responses from session errors
+                            self.backend_messages
+                                .send(backend::Message::ErrorResponse {
+                                    code,
+                                    message,
+                                    severity,
+                                })
+                                .map_err(|_| Error::Sync)?;
+                        }
                     }
                 }
+
+                // let the frontend know that another transaction can be started
+                self.backend_messages
+                    .send(backend::Message::ReadyForQuery {
+                        transaction_status: backend::TransactionStatus::Idle,
+                    })
+                    .map_err(|_| Error::Sync)?;
             }
             frontend::Message::Flush => {
                 // verify that FLUSH is already in a transaction
@@ -672,7 +640,7 @@ mod test {
         protocol::{
             backend::{self, TransactionStatus},
             errors::DUPLICATE_PREPARED_STATEMENT,
-            frontend::{self, ParseBody},
+            frontend::{self, BindBody, ParseBody},
         },
         tcp,
     };
@@ -680,6 +648,7 @@ mod test {
     use futures_util::{future, stream, StreamExt};
     use postguard::Guard;
     use std::sync::Arc;
+    use tokio::sync::mpsc::error::TryRecvError;
 
     #[tokio::test]
     #[tracing_test::traced_test]
@@ -692,15 +661,19 @@ mod test {
         ))
         .boxed();
 
-        let connection = Connection::new(messages);
+        // create a mock Connection
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        let connection = Connection::test(messages, frontend_sink);
 
         // create a mock router
+        let cluster = Cluster::test(connection)
+            .map(Arc::new)
+            .expect("Error creating test Cluster");
         let (transmitter, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let guard = Arc::new(Guard::default());
-        let cluster = Arc::new(Cluster::test(connection));
         let router = Router::new(cluster, transmitter, guard);
 
-        // route a identical PARSE messages with a name
+        // route an identical PARSE messages with a name
         let body = ParseBody::new(
             Bytes::from_static(b"foo"),
             Bytes::from_static(b"select $1"),
@@ -735,7 +708,155 @@ mod test {
                 code, DUPLICATE_PREPARED_STATEMENT,
                 "Incorrect error code in ErrorResponse"
             ),
-            message => panic!("Expected ErrorResponse, found {:?}", message),
+            message => panic!("Expected ErrorResponse, found {message:?}"),
         }
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn handles_parse_bind_mappings() {
+        // handle the startup message stream
+        let messages = stream::once(future::ok::<_, tcp::Error>(
+            backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle,
+            },
+        ))
+        .boxed();
+
+        // create a mock Connection
+        let (frontend_sink, mut frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        let connection = Connection::test(messages, frontend_sink);
+
+        // create a mock router
+        let cluster = Cluster::test(connection)
+            .map(Arc::new)
+            .expect("Error creating test Cluster");
+        let (transmitter, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let guard = Arc::new(Guard::default());
+        let router = Router::new(cluster, transmitter, guard);
+
+        // route a PARSE messages with a name
+        let name = Bytes::from_static(b"foo");
+        let statement = Bytes::from_static(b"select $1");
+        let parse_body = ParseBody::new(name.clone(), statement, vec![]);
+        let parse_message = frontend::Message::Parse(parse_body.clone());
+
+        router
+            .route(parse_message)
+            .await
+            .expect("Error routing valid PARSE message");
+
+        // expect that no PARSE message was sent upstream
+        let next_message_error = frontend_stream
+            .try_recv()
+            .expect_err("Expected a TryRecvError, but there was a message");
+
+        assert_eq!(
+            next_message_error,
+            TryRecvError::Empty,
+            "Expected TryRecvError::Empty, but found {next_message_error:?}"
+        );
+
+        // route a BIND message bound to the prepared statement
+        let portal = Bytes::from_static(b"bar");
+        let bind_body = BindBody::new(portal, name.clone());
+        let bind_message = frontend::Message::Bind(bind_body.clone());
+
+        router
+            .route(bind_message.clone())
+            .await
+            .expect("Error routing valid BIND message");
+
+        // expect PARSE and BIND message sent upstream together
+        let next_message = frontend_stream
+            .recv()
+            .await
+            .expect("Parse message not proxied");
+
+        let hashed_statement_name = parse_body.hash();
+        let mut expected = parse_body;
+        expected.name = hashed_statement_name.clone();
+        let parse_message = frontend::Message::Parse(expected);
+
+        assert_eq!(
+            next_message, parse_message,
+            "Expected a proxied Parse message, but found {next_message:?}"
+        );
+
+        let mut expected = bind_body;
+        expected.set_statement(hashed_statement_name);
+        let bind_message = frontend::Message::Bind(expected);
+
+        let next_message = frontend_stream
+            .recv()
+            .await
+            .expect("Bind message not proxied");
+
+        assert_eq!(
+            next_message, bind_message,
+            "Expected a proxied Bind message, but found {next_message:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn handles_duplicate_syncs() {
+        // handle the startup message stream
+        let messages = stream::once(future::ok::<_, tcp::Error>(
+            backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle,
+            },
+        ))
+        .boxed();
+
+        // create a mock connection
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        let connection = Connection::test(messages, frontend_sink);
+
+        // create a mock router
+        let cluster = Cluster::test(connection)
+            .map(Arc::new)
+            .expect("Error creating test Cluster");
+        let (transmitter, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let guard = Arc::new(Guard::default());
+        let router = Router::new(cluster, transmitter, guard);
+
+        // route duplicate SYNC messages
+        router
+            .route(frontend::Message::Sync)
+            .await
+            .expect("Error routing valid SYNC message");
+
+        router
+            .route(frontend::Message::Sync)
+            .await
+            .expect("Error routing valid SYNC message");
+
+        // expect two ReadyForQuery responses (even without active transactions)
+        let first_transaction_message = receiver
+            .recv()
+            .await
+            .expect("Error fetching first message from first SYNC");
+
+        assert_eq!(
+            first_transaction_message,
+            backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle
+            },
+            "Expected ReadyForQuery after Sync, was {first_transaction_message:?}"
+        );
+
+        let second_transaction_message = receiver
+            .recv()
+            .await
+            .expect("Error fetching second message from second SYNC");
+
+        assert_eq!(
+            second_transaction_message,
+            backend::Message::ReadyForQuery {
+                transaction_status: TransactionStatus::Idle
+            },
+            "Expected ReadyForQuery after Sync, was {second_transaction_message:?}"
+        );
     }
 }

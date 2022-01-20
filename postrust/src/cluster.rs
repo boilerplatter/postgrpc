@@ -8,7 +8,6 @@ use crate::{
     },
     tcp,
 };
-use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use once_cell::sync::Lazy;
 use postguard::{AllowedFunctions, AllowedStatements, Guard};
 use std::{
@@ -116,18 +115,14 @@ impl Cluster {
             leaders
                 .into_iter()
                 .map(Pool::new)
-                .collect::<FuturesUnordered<_>>()
-                .try_collect()
-                .await?,
+                .collect::<Result<Vec<_>, _>>()?,
         );
 
         let proxied_followers = Pools::new(
             followers
                 .into_iter()
                 .map(Pool::new)
-                .collect::<FuturesUnordered<_>>()
-                .try_collect()
-                .await?,
+                .collect::<Result<Vec<_>, _>>()?,
         );
 
         Ok(Self {
@@ -140,7 +135,7 @@ impl Cluster {
 /// Implement methods for all pool types
 impl<P> Cluster<P>
 where
-    P: Pooled<Error = tcp::Error>,
+    P: Pooled<Error = tcp::Error> + 'static,
     P::Configuration: fmt::Debug,
 {
     #[tracing::instrument]
@@ -166,11 +161,13 @@ where
     P::Configuration: Default + fmt::Debug,
 {
     /// Handle creation of test cluster from a poolable object
-    pub fn test(object: P) -> Self {
-        let leaders = Pools::new(vec![Pool::test(object)]);
+    pub fn test(object: P) -> Result<Self, tcp::Error> {
+        let configuration = P::Configuration::default();
+        let pool = Pool::new_with_objects(configuration, vec![object])?;
+        let leaders = Pools::new(vec![pool]);
         let followers = Pools::new(vec![]);
 
-        Self { leaders, followers }
+        Ok(Self { leaders, followers })
     }
 }
 
@@ -191,7 +188,7 @@ where
 /// Fetch a single connection from a set of Endpoints with retries
 async fn fetch_with_retry<P>(endpoints: &Pools<P>) -> Result<PooledObject<P>, Error>
 where
-    P: Pooled<Error = tcp::Error>,
+    P: Pooled<Error = tcp::Error> + 'static,
     P::Configuration: fmt::Debug,
 {
     let start = Instant::now();

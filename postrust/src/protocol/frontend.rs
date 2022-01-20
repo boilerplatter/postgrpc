@@ -5,7 +5,11 @@ use super::{backend, buffer::Buffer};
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{BufMut, Bytes, BytesMut};
 use postguard::Guard;
-use std::io;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    io,
+};
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Byte tags for relevant frontend message variants
@@ -21,7 +25,7 @@ const SYNC_TAG: u8 = b'S';
 const FLUSH_TAG: u8 = b'H';
 
 /// Post-startup Postgres frontend message variants that Postrust cares about
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     // TODO:
     // CancelRequest
@@ -409,18 +413,18 @@ impl Message {
 }
 
 /// Body types for messages with payloads
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SASLInitialResponseBody {
     pub mechanism: Bytes,
     pub initial_response: Bytes,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SASLResponseBody {
     pub data: Bytes,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BindBody {
     portal: Bytes,
     statement: Bytes,
@@ -430,13 +434,23 @@ pub struct BindBody {
 }
 
 impl BindBody {
-    #[inline]
     pub fn statement(&self) -> Bytes {
         self.statement.slice(..)
     }
 
     pub fn set_statement(&mut self, statement: Bytes) {
         self.statement = statement;
+    }
+
+    #[cfg(test)]
+    pub fn new(portal: Bytes, statement: Bytes) -> Self {
+        Self {
+            portal,
+            statement,
+            parameter_format_codes: vec![],
+            parameters: vec![],
+            column_format_codes: vec![],
+        }
     }
 }
 
@@ -446,7 +460,7 @@ impl From<BindBody> for Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CloseBody {
     Portal { name: Bytes },
     Statement { name: Bytes },
@@ -458,7 +472,7 @@ impl From<CloseBody> for Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecuteBody {
     portal: Bytes,
     max_rows: i32,
@@ -470,7 +484,7 @@ impl From<ExecuteBody> for Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DescribeBody {
     Portal { name: Bytes },
     Statement { name: Bytes },
@@ -482,7 +496,7 @@ impl From<DescribeBody> for Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParseBody {
     // FIXME: make fields private again
     pub name: Bytes,
@@ -499,8 +513,11 @@ impl ParseBody {
         self.query.slice(..)
     }
 
-    pub fn parameter_types(&self) -> &[i32] {
-        &self.parameter_types
+    pub fn hash(&self) -> Bytes {
+        let mut state = DefaultHasher::new();
+        self.query.hash(&mut state);
+        self.parameter_types.hash(&mut state);
+        state.finish().to_string().into() // FIXME: avoid to_string()
     }
 
     #[cfg(test)]
@@ -519,7 +536,7 @@ impl From<ParseBody> for Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PasswordMessageBody {
     password: Bytes,
 }
@@ -530,22 +547,12 @@ impl PasswordMessageBody {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QueryBody {
     query: Bytes,
 }
 
 impl QueryBody {
-    // FIXME
-    // pub fn new<Q>(query: Q) -> Self
-    // where
-    //     Q: Into<Bytes>,
-    // {
-    //     Self {
-    //         query: query.into(),
-    //     }
-    // }
-
     #[inline]
     pub fn query(&self) -> Bytes {
         self.query.slice(..)

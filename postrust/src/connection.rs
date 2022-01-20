@@ -21,10 +21,14 @@ use std::{
     fmt,
     pin::Pin,
     task::{Context, Poll},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
+
+// FIXME: make this configurable
+/// Length of time that a Connection can be idle before getting cleaned up
+const IDLE_CONNECTION_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -103,16 +107,6 @@ where
         Ok(messages)
     }
 
-    /// Fetch the Instant when the Connection was last used
-    pub fn last_used(&self) -> Instant {
-        self.last_used
-    }
-
-    /// Update the tracked last use of the Connection
-    fn update_last_used(&mut self) {
-        self.last_used = Instant::now()
-    }
-
     /// Subscribe to backend messages for an entire top-level transaction
     #[tracing::instrument(skip(self))]
     pub async fn transaction(&mut self) -> Result<Transaction<'_, S>, Error> {
@@ -130,16 +124,9 @@ where
     }
 
     #[cfg(test)]
-    /// Construct a new Connection for testing
-    pub fn new(backend_stream: S) -> Self {
-        let (frontend_sink, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-
-        tokio::spawn(async move {
-            while let Some(_message) = receiver.recv().await {
-                tracing::debug!("Message heard in test Connection");
-            }
-        });
-
+    /// Construct a new Connection for testing from a mock stream of backend messages
+    /// and an Unbounded message sink
+    pub fn test(backend_stream: S, frontend_sink: UnboundedSender<frontend::Message>) -> Self {
         Self {
             frontend_sink,
             backend_stream,
@@ -175,7 +162,12 @@ impl Pooled for Connection {
 
     /// Update the Connection's last use
     fn update(&mut self) {
-        self.update_last_used();
+        self.last_used = Instant::now()
+    }
+
+    /// Handle for deciding if the connection should be dropped from the Pool
+    fn should_drop(&self, drop_time: &Instant) -> bool {
+        drop_time.duration_since(self.last_used) > IDLE_CONNECTION_DURATION
     }
 }
 
@@ -303,7 +295,10 @@ mod test {
     use super::Connection;
     use crate::{
         pool::Pooled,
-        protocol::backend::{self, TransactionStatus},
+        protocol::{
+            backend::{self, TransactionStatus},
+            errors::TOO_MANY_CONNECTIONS,
+        },
         tcp,
     };
     use bytes::Bytes;
@@ -321,14 +316,23 @@ mod test {
     static FIRST_MESSAGE: backend::Message =
         backend::Message::Forward(Bytes::from_static(b"first message"));
 
-    /// Inject the backend stream through configuration for testing
+    /// Make Connections built on arbitrary streams Poolable for testing
     #[async_trait::async_trait]
     impl<'a> Pooled for Connection<BoxStream<'a, Result<backend::Message, tcp::Error>>> {
         type Configuration = ();
         type Error = tcp::Error;
 
         async fn create(_configuration: &Self::Configuration) -> Result<Self, Self::Error> {
-            unreachable!("Attempted to create a mocked Connection");
+            tracing::warn!("Attempted to create a mocked Connection");
+
+            // pretend to be a too-many-connections error so that clusters retry on returned connnections
+            // FIXME: should retries be a Pool-level mechanism instead? Could be part of the
+            // Poolable trait, right?
+            Err(tcp::Error::Upstream {
+                code: TOO_MANY_CONNECTIONS.clone(),
+                message: Bytes::from_static(b"Keep waiting for a connection"),
+                severity: backend::Severity::Error,
+            })
         }
     }
 
@@ -338,7 +342,8 @@ mod test {
             .chain(stream::iter([FIRST_MESSAGE.clone()]))
             .map(Result::Ok);
 
-        let mut connection = Connection::new(messages);
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        let mut connection = Connection::test(messages, frontend_sink);
         let first_message = connection
             .try_next()
             .await
@@ -356,7 +361,8 @@ mod test {
     async fn initializes_with_only_startup_messages() {
         let messages = stream::iter(STARTUP_MESSAGES.clone()).map(Result::Ok);
 
-        Connection::new(messages)
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        Connection::test(messages, frontend_sink)
             .startup_messages()
             .await
             .expect("Error initializing startup messages")
@@ -369,7 +375,8 @@ mod test {
             .chain(stream::iter([FIRST_MESSAGE.clone()]))
             .map(Result::Ok);
 
-        let mut connection = Connection::new(messages);
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        let mut connection = Connection::test(messages, frontend_sink);
         let startup_messages: Vec<_> = connection
             .startup_messages()
             .await
@@ -389,7 +396,8 @@ mod test {
             .chain(stream::iter([FIRST_MESSAGE.clone()]))
             .map(Result::Ok);
 
-        Connection::new(messages)
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        Connection::test(messages, frontend_sink)
             .transaction()
             .await
             .expect("Error retrieving Transaction stream");
@@ -401,7 +409,8 @@ mod test {
             .chain(stream::iter([FIRST_MESSAGE.clone()]))
             .map(Result::Ok);
 
-        Connection::new(messages)
+        let (frontend_sink, _frontend_stream) = tokio::sync::mpsc::unbounded_channel();
+        Connection::test(messages, frontend_sink)
             .flush()
             .await
             .expect("Error retrieving Flush stream");
