@@ -2,10 +2,7 @@ use crate::{
     connection::Connection,
     endpoint::Endpoint,
     pool::{Pool, Pooled, PooledObject, Pools},
-    protocol::{
-        backend,
-        errors::{CONNECTION_DOES_NOT_EXIST, TOO_MANY_CONNECTIONS},
-    },
+    protocol::{backend, errors::CONNECTION_DOES_NOT_EXIST},
     tcp,
 };
 use once_cell::sync::Lazy;
@@ -43,10 +40,6 @@ impl From<&Error> for backend::Message {
 /// Timeout for fetching a connection from upstream
 // FIXME: make this configurable
 static POOL_FETCH_TIMEOUT: Duration = Duration::from_millis(1000);
-
-/// Standard delay between retries when fetching from a pool
-// FIXME: make this configurable
-static POOL_FETCH_DELAY: Duration = Duration::from_millis(200);
 
 /// Pooled clusters keyed by configurations
 pub static CLUSTERS: Lazy<RwLock<HashMap<Key, Arc<Cluster>>>> =
@@ -94,7 +87,7 @@ impl Default for Configuration {
 /// Wrapper around the cluster connections for a single auth response
 pub struct Cluster<P = Connection>
 where
-    P: Pooled<Error = tcp::Error>,
+    P: Pooled,
     P::Configuration: fmt::Debug,
 {
     leaders: Pools<P>,
@@ -135,8 +128,9 @@ impl Cluster {
 /// Implement methods for all pool types
 impl<P> Cluster<P>
 where
-    P: Pooled<Error = tcp::Error> + 'static,
+    P: Pooled + 'static,
     P::Configuration: fmt::Debug,
+    P::Error: Into<Error> + fmt::Display,
 {
     #[tracing::instrument]
     pub async fn leader(&self) -> Result<PooledObject<P>, Error> {
@@ -157,11 +151,12 @@ where
 #[cfg(test)]
 impl<P> Cluster<P>
 where
-    P: Pooled<Error = tcp::Error> + 'static,
+    P: Pooled + 'static,
     P::Configuration: Default + fmt::Debug,
+    P::Error: fmt::Display,
 {
     /// Handle creation of test cluster from a poolable object
-    pub fn test(object: P) -> Result<Self, tcp::Error> {
+    pub fn test(object: P) -> Result<Self, P::Error> {
         let configuration = P::Configuration::default();
         let pool = Pool::new_with_objects(configuration, vec![object])?;
         let leaders = Pools::new(vec![pool]);
@@ -173,7 +168,7 @@ where
 
 impl<P> fmt::Debug for Cluster<P>
 where
-    P: Pooled<Error = tcp::Error>,
+    P: Pooled,
     P::Configuration: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -188,8 +183,9 @@ where
 /// Fetch a single connection from a set of Endpoints with retries
 async fn fetch_with_retry<P>(endpoints: &Pools<P>) -> Result<PooledObject<P>, Error>
 where
-    P: Pooled<Error = tcp::Error> + 'static,
+    P: Pooled + 'static,
     P::Configuration: fmt::Debug,
+    P::Error: Into<Error> + fmt::Display,
 {
     let start = Instant::now();
 
@@ -197,30 +193,25 @@ where
         let connections = endpoints.next().ok_or(Error::MissingLeader)?;
 
         match connections.get().await {
-            Err(tcp::Error::Upstream {
-                code,
-                message,
-                severity,
-            }) if code.as_ref() == TOO_MANY_CONNECTIONS => {
+            Err(error) => {
                 // exit early if the retry timeout has expired
                 if Instant::now().duration_since(start) > POOL_FETCH_TIMEOUT {
-                    return Err(Error::Tcp(tcp::Error::Upstream {
-                        code,
-                        message,
-                        severity,
-                    }));
+                    return Err(error.into());
                 }
 
-                // retry after a delay if possible
-                tracing::warn!(
-                    ?code,
-                    ?message,
-                    "Retrying connection after recoverable upstream error"
-                );
+                if let Some(delay) = P::should_retry_in(&error) {
+                    // retry after a delay if possible
+                    tracing::warn!(
+                        ?delay,
+                        %error,
+                        "Retrying connection after recoverable upstream error"
+                    );
 
-                tokio::time::sleep(POOL_FETCH_DELAY).await;
+                    tokio::time::sleep(delay).await;
+                } else {
+                    return Err(error.into());
+                }
             }
-            Err(error) => return Err(error.into()),
             Ok(connection) => break connection,
         };
     };

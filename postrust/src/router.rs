@@ -61,7 +61,7 @@ impl From<&Error> for backend::Message {
 enum TransactionMode<S>
 where
     S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
-    Connection<S>: Pooled<Error = tcp::Error>,
+    Connection<S>: Pooled,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
 {
     InProgress {
@@ -78,7 +78,7 @@ where
 impl<S> TransactionMode<S>
 where
     S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
-    Connection<S>: Pooled<Error = tcp::Error>,
+    Connection<S>: Pooled,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
 {
     fn into_error(self, code: Bytes, message: Bytes, severity: backend::Severity) -> Self {
@@ -99,7 +99,7 @@ where
 impl<S> fmt::Debug for TransactionMode<S>
 where
     S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
-    Connection<S>: Pooled<Error = tcp::Error>,
+    Connection<S>: Pooled,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -124,18 +124,22 @@ where
 pub struct Router<S = SplitStream<tcp::Connection<backend::Codec>>>
 where
     S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin,
-    Connection<S>: Pooled<Error = tcp::Error> + Sink<frontend::Message, Error = connection::Error>,
+    Connection<S>: Pooled + Sink<frontend::Message, Error = connection::Error>,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
 {
     /// Reference to the Cluster where messages should be routed
     cluster: Arc<Cluster<Connection<S>>>,
+
     /// Message broker for aggregating backend messages from the Cluster
     backend_messages: UnboundedSender<backend::Message>,
+
     /// Postrust-based Guard for rejecting disallowed statements
     statement_guard: Arc<Guard>,
+
     /// Map of prepared statements names to content hashes for extended query protocol support
     // FIXME: provide DEALLOCATE mechanism (either here or in the cluster through refcounts)
     named_statements: Mutex<BTreeMap<Bytes, ParseBody>>,
+
     /// An active transaction and its dedicated connection for when the session is in a transaction
     transaction: Mutex<Option<TransactionMode<S>>>,
 }
@@ -143,8 +147,9 @@ where
 impl<S> Router<S>
 where
     S: Stream<Item = Result<backend::Message, tcp::Error>> + Unpin + 'static,
-    Connection<S>: Pooled<Error = tcp::Error> + Sink<frontend::Message, Error = connection::Error>,
+    Connection<S>: Pooled + Sink<frontend::Message, Error = connection::Error>,
     <Connection<S> as Pooled>::Configuration: fmt::Debug,
+    <Connection<S> as Pooled>::Error: Into<cluster::Error> + fmt::Display,
 {
     /// Initialize a new Router
     pub fn new(
@@ -558,32 +563,17 @@ where
                     .map_err(|_| Error::Sync)?;
             }
             frontend::Message::Flush => {
-                // verify that FLUSH is already in a transaction
                 let mut transaction = self.transaction.lock().await;
 
-                match transaction.as_mut() {
-                    Some(mut transaction_mode) => {
-                        if let TransactionMode::InProgress { connection } = &mut transaction_mode {
-                            connection.send(frontend::Message::Flush).await?;
+                if let Some(TransactionMode::InProgress { connection }) = transaction.as_mut() {
+                    connection.send(frontend::Message::Flush).await?;
 
-                            // flush the output up to the next pending point
-                            let mut flush = connection.flush().await?;
+                    // flush the output up to the next pending point
+                    let mut flush = connection.flush().await?;
 
-                            while let Some(message) = flush.try_next().await? {
-                                self.backend_messages
-                                    .send(message)
-                                    .map_err(|_| Error::Sync)?;
-                            }
-                        }
-                    }
-                    None => {
-                        // let the user know about the invalid transaction state
+                    while let Some(message) = flush.try_next().await? {
                         self.backend_messages
-                            .send(backend::Message::ErrorResponse {
-                                code: INVALID_TRANSACTION_STATE.clone(),
-                                message: "Invalid transaction state".into(),
-                                severity: backend::Severity::Error,
-                            })
+                            .send(message)
                             .map_err(|_| Error::Sync)?;
                     }
                 }

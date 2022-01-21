@@ -1,4 +1,4 @@
-use crate::{connection::Connection, tcp};
+use crate::connection::Connection;
 use std::{
     fmt,
     ops::{Deref, DerefMut},
@@ -30,11 +30,11 @@ impl<P> Pool<P>
 where
     P: Pooled + 'static,
     P::Configuration: fmt::Debug,
-    tcp::Error: From<P::Error>,
+    P::Error: fmt::Display,
 {
     /// Create a new Pool from a configuration
     #[tracing::instrument]
-    pub fn new(configuration: P::Configuration) -> Result<Self, tcp::Error> {
+    pub fn new(configuration: P::Configuration) -> Result<Self, P::Error> {
         Self::new_with_objects(configuration, vec![])
     }
 
@@ -44,7 +44,7 @@ where
     pub(crate) fn new_with_objects(
         configuration: P::Configuration,
         objects: Vec<P>,
-    ) -> Result<Self, tcp::Error> {
+    ) -> Result<Self, P::Error> {
         let objects = Arc::new(Mutex::new(objects));
 
         // periodically clean up idle objects
@@ -93,7 +93,7 @@ where
 
     /// Fetch an existing idle object from the pool (LIFO) or initialize a new one
     #[tracing::instrument]
-    pub async fn get(&self) -> Result<PooledObject<P>, tcp::Error> {
+    pub async fn get(&self) -> Result<PooledObject<P>, P::Error> {
         let mut objects = self.objects.lock().await;
 
         tracing::debug!(objects = objects.len(), "Fetching Object from the Pool");
@@ -192,10 +192,15 @@ pub trait Pooled: Sized + Send {
     /// Create a new poolable object from a configuration
     async fn create(configuration: &Self::Configuration) -> Result<Self, Self::Error>;
 
-    /// Update hook for the pooled object, called on Drop
-    fn update(&mut self) {}
+    /// If a creation error is recoverable, return how long to wait for the next retry
+    fn should_retry_in(error: &Self::Error) -> Option<Duration>;
 
-    /// Handle for deciding if a pooled object should be dropped by the Pool
+    /// Update hook for the pooled object, called on Drop
+    fn update(&mut self) {
+        // by default, do nothing
+    }
+
+    /// Handle for deciding if a pooled object should be dropped by the Pool at a certain time
     fn should_drop(&self, _drop_time: &Instant) -> bool {
         false // by default, do no clean up
     }

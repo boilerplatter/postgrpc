@@ -4,7 +4,7 @@ use crate::{
     pool::Pooled,
     protocol::{
         backend::{self, TransactionStatus},
-        errors::CONNECTION_EXCEPTION,
+        errors::{CONNECTION_EXCEPTION, TOO_MANY_CONNECTIONS},
         frontend,
     },
     tcp,
@@ -29,6 +29,10 @@ use tokio::sync::mpsc::UnboundedSender;
 // FIXME: make this configurable
 /// Length of time that a Connection can be idle before getting cleaned up
 const IDLE_CONNECTION_DURATION: Duration = Duration::from_secs(5);
+
+/// Standard delay between retries when creating new connections
+// FIXME: make this configurable
+static CONNECTION_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -149,15 +153,24 @@ impl Pooled for Connection {
     async fn create(endpoint: &Self::Configuration) -> Result<Self, Self::Error> {
         tracing::info!("Adding Connection for Endpoint");
 
-        let tcp_connection = tcp::Connection::<backend::Codec>::connect(
+        tcp::Connection::<backend::Codec>::connect(
             endpoint.address(),
             endpoint.user.to_string(),
             endpoint.password.to_string(),
             endpoint.database.to_string(),
         )
-        .await?;
+        .await
+        .map(Self::from)
+    }
 
-        Ok(Self::from(tcp_connection))
+    /// Handle for retrying recoverable TCP errors
+    fn should_retry_in(error: &Self::Error) -> Option<Duration> {
+        match error {
+            tcp::Error::Upstream { code, .. } if code == &TOO_MANY_CONNECTIONS => {
+                Some(CONNECTION_RETRY_DELAY)
+            }
+            _ => None,
+        }
     }
 
     /// Update the Connection's last use
@@ -295,10 +308,7 @@ mod test {
     use super::Connection;
     use crate::{
         pool::Pooled,
-        protocol::{
-            backend::{self, TransactionStatus},
-            errors::TOO_MANY_CONNECTIONS,
-        },
+        protocol::backend::{self, TransactionStatus},
         tcp,
     };
     use bytes::Bytes;
@@ -322,17 +332,14 @@ mod test {
         type Configuration = ();
         type Error = tcp::Error;
 
+        // create() should never be called during testing
         async fn create(_configuration: &Self::Configuration) -> Result<Self, Self::Error> {
-            tracing::warn!("Attempted to create a mocked Connection");
+            unreachable!("Attempted to create a mocked Connection");
+        }
 
-            // pretend to be a too-many-connections error so that clusters retry on returned connnections
-            // FIXME: should retries be a Pool-level mechanism instead? Could be part of the
-            // Poolable trait, right?
-            Err(tcp::Error::Upstream {
-                code: TOO_MANY_CONNECTIONS.clone(),
-                message: Bytes::from_static(b"Keep waiting for a connection"),
-                severity: backend::Severity::Error,
-            })
+        // retry instantly when testing
+        fn should_retry_in(_error: &Self::Error) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(0))
         }
     }
 
