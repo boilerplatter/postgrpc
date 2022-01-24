@@ -478,6 +478,16 @@ pub struct ExecuteBody {
     max_rows: i32,
 }
 
+#[cfg(test)]
+impl ExecuteBody {
+    pub fn new(portal: Bytes) -> Self {
+        Self {
+            portal,
+            max_rows: 0,
+        }
+    }
+}
+
 impl From<ExecuteBody> for Message {
     fn from(body: ExecuteBody) -> Self {
         Self::Execute(body)
@@ -488,6 +498,17 @@ impl From<ExecuteBody> for Message {
 pub enum DescribeBody {
     Portal { name: Bytes },
     Statement { name: Bytes },
+}
+
+impl DescribeBody {
+    #[cfg(test)]
+    pub fn new_portal(name: Bytes) -> Self {
+        Self::Portal { name }
+    }
+
+    pub fn new_statement(name: Bytes) -> Self {
+        Self::Statement { name }
+    }
 }
 
 impl From<DescribeBody> for Message {
@@ -556,6 +577,11 @@ impl QueryBody {
     #[inline]
     pub fn query(&self) -> Bytes {
         self.query.slice(..)
+    }
+
+    #[cfg(test)]
+    pub fn new(query: Bytes) -> Self {
+        Self { query }
     }
 }
 

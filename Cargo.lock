@@ -1175,6 +1175,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.6",
