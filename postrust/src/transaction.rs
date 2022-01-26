@@ -66,3 +66,66 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::Transaction;
+    use crate::{
+        protocol::backend::{self, TransactionStatus},
+        tcp,
+    };
+    use bytes::Bytes;
+    use futures_util::{stream, TryStreamExt};
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn terminates_on_idle_transaction_status() {
+        // create a mock transaction
+        let first_message = backend::Message::Forward(Bytes::from_static(b"foo"));
+        let termination_message = backend::Message::ReadyForQuery {
+            transaction_status: TransactionStatus::Idle,
+        };
+        let extra_message = backend::Message::Forward(Bytes::from_static(b"extra"));
+
+        let mut messages = stream::iter([
+            Ok::<_, tcp::Error>(first_message.clone()),
+            Ok::<_, tcp::Error>(termination_message.clone()),
+            Ok::<_, tcp::Error>(extra_message),
+        ]);
+
+        let mut transaction = Transaction::new(&mut messages);
+
+        // verify a properly-framed transaction
+        let message = transaction
+            .try_next()
+            .await
+            .expect("Error fetching message from Transaction")
+            .expect("Transaction closed before ReadyForQuery");
+
+        assert_eq!(
+            message, first_message,
+            "Expected {first_message:?} first, but found {message:?}"
+        );
+
+        let message = transaction
+            .try_next()
+            .await
+            .expect("Error fetching message from Transaction")
+            .expect("Transaction closed before ReadyForQuery");
+
+        assert_eq!(
+            message, termination_message,
+            "Expected {first_message:?} next, but found {message:?}"
+        );
+
+        let transaction_end = transaction
+            .try_next()
+            .await
+            .expect("Error fetching message from Transaction");
+
+        assert!(
+            transaction_end.is_none(),
+            "Expected transaction termination, but found {transaction_end:?}"
+        );
+    }
+}
