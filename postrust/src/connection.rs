@@ -7,6 +7,7 @@ use crate::{
         errors::{CONNECTION_EXCEPTION, TOO_MANY_CONNECTIONS},
         frontend,
     },
+    sync::Sync,
     tcp,
     transaction::Transaction,
 };
@@ -117,6 +118,14 @@ where
         self.initialize_startup_messages().await?;
 
         Ok(Transaction::new(&mut self.backend_stream))
+    }
+
+    /// Subscribe to backend messages until the next synchronization point
+    #[tracing::instrument(skip(self))]
+    pub async fn sync(&mut self) -> Result<Sync<'_, S>, Error> {
+        self.initialize_startup_messages().await?;
+
+        Ok(Sync::new(&mut self.backend_stream))
     }
 
     /// Flush the messages in the connection until the next Pending state

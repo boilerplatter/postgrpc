@@ -303,8 +303,7 @@ impl Severity {
 }
 
 /// Possible transaction statuses for use in ReadyForQuery messages
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransactionStatus {
     Idle,
     Transaction,

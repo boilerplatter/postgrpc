@@ -18,6 +18,7 @@ mod pool;
 mod protocol;
 mod router;
 mod session;
+mod sync;
 mod tcp;
 mod transaction;
 
@@ -53,11 +54,11 @@ where
     match session {
         Ok(session) => {
             if let Err(error) = session.serve(shutdown).await {
-                tracing::error!(error = ?error, "Closing Session with error");
+                tracing::error!(%error, "Closing Session with error");
             }
         }
         Err(error) => {
-            tracing::warn!(error = ?error, "Failed to start session");
+            tracing::warn!(%error, "Failed to start session");
         }
     }
 }

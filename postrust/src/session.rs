@@ -34,10 +34,10 @@ pub enum Error {
     Tcp(#[from] tcp::Error),
     #[error("Message {0:?} violates Postgres message protocol")]
     Protocol(frontend::Message),
+    #[error(r#"password authentication failed for user "{0}""#)]
+    Unauthorized(String),
     #[error("Error flushing startup messages on session init")]
     Flush,
-    #[error("Failed authorization step")]
-    Unauthorized,
     #[error("Message type not yet supported")]
     Unimplemented,
     #[error("Connection closed unexpectedly")]
@@ -57,7 +57,7 @@ impl From<&Error> for backend::Message {
                 message: error.to_string().into(),
                 severity: backend::Severity::Fatal,
             },
-            Error::Unauthorized => Self::ErrorResponse {
+            Error::Unauthorized(..) => Self::ErrorResponse {
                 code: INVALID_PASSWORD.clone(),
                 message: error.to_string().into(),
                 severity: backend::Severity::Fatal,
@@ -240,23 +240,9 @@ async fn handle_cluster_configuration(
                     password,
                 } if user == "test" && database == "testdb" && password == "hunter2" => {}
                 credentials => {
-                    // reject the connection
-                    // FIXME: figure out how to do this without getting a Connection refused error
-                    // in psql (see: pgbouncer and postgres itself). Is there another frame that we
-                    // should be sending?
-                    connection
-                        .send(backend::Message::ErrorResponse {
-                            code: INVALID_PASSWORD.clone(),
-                            severity: backend::Severity::Fatal,
-                            message: format!(
-                                r#"password authentication failed for user "{}""#,
-                                String::from_utf8_lossy(&credentials.user),
-                            )
-                            .into(),
-                        })
-                        .await?;
-
-                    return Err(Error::Unauthorized);
+                    return Err(Error::Unauthorized(
+                        String::from_utf8_lossy(&credentials.user).into(),
+                    ));
                 }
             }
 

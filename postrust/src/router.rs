@@ -521,12 +521,21 @@ where
                             // flush the transaction output on SYNC
                             connection.send(frontend::Message::Sync).await?;
 
-                            let mut transaction = connection.transaction().await?;
+                            let mut sync = connection.sync().await?;
 
-                            while let Some(message) = transaction.try_next().await? {
+                            while let Some(message) = sync.try_next().await? {
                                 self.backend_messages
                                     .send(message)
                                     .map_err(|_| Error::Sync)?;
+                            }
+
+                            // keep the transaction state if needed
+                            if sync.transaction_status()
+                                == Some(backend::TransactionStatus::Transaction)
+                            {
+                                tracing::debug!("Maintaining transaction lock after SYNC");
+
+                                *transaction = Some(TransactionMode::InProgress { connection });
                             }
                         }
                         TransactionMode::IgnoreTillSync {
@@ -582,13 +591,6 @@ where
                 }
             }
             frontend::Message::Query(body) => {
-                // FIXME:
-                // 1. support EXPLICIT and NESTED transactions
-                // 2. support PREPARE and EXECUTE SQL statements in Query bodies
-                // 3. check that multiple QUERY messages don't result in interleaved results
-                // (i.e. order of responses is maintained, even between transactions!)
-                // if this is a queue, consider removing the concurrency from message parsing, too
-
                 // reset the unnamed prepared statement if one exists
                 let mut named_statements = self.named_statements.lock().await;
 
@@ -1268,4 +1270,7 @@ mod test {
     // 2. BEGIN and COMMIT are handled in simple Query
     // 3. BEGIN and COMMIT are handled in extended query protocol
     // 4. non-transactional messages are rejected inside of a query
+    // 5. reads are concurrently processed within a transaction until the first write
+    // 6. post-write messages are processed on a single connection
+    // 7. all inter-transaction backend messages are returned in-order
 }
