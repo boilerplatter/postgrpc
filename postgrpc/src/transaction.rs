@@ -1,35 +1,107 @@
-use crate::{
-    error_to_status, extensions,
-    proto::transaction::{
-        transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest,
-        RollbackRequest, TransactionQueryRequest,
-    },
-    protocol::{json, parameter},
+use crate::proto::transaction::{
+    transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest, RollbackRequest,
+    TransactionQueryRequest,
 };
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use postgres_role_json_pool::Pool;
-use postgres_services::transaction::Transaction;
+use postgrpc::{
+    pool::{Connection, FromRequest, Parameter, Pool},
+    pools::transaction,
+};
+use std::{hash::Hash, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-/// map transaction pool errors to proper gRPC statuses
-fn transaction_error_to_status(
-    error: postgres_transaction_pool::Error<postgres_role_json_pool::Error>,
-) -> Status {
-    let message = error.to_string();
+/// Type alias representing a bubbled-up error from the transaction pool
+pub type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
 
-    match error {
-        postgres_transaction_pool::Error::ConnectionFailure => Status::resource_exhausted(message),
-        postgres_transaction_pool::Error::Uninitialized => Status::failed_precondition(message),
-        postgres_transaction_pool::Error::Connection(error) => error_to_status(error),
+/// Protocol-agnostic Transaction handlers for any connection pool
+#[derive(Clone)]
+pub struct Transaction<P>
+where
+    P: Pool,
+    P::Key: Hash + Eq + Clone,
+{
+    pool: transaction::Pool<P>,
+}
+
+impl<P> Transaction<P>
+where
+    P: Pool + 'static,
+    P::Key: Hash + Eq + Send + Sync + Clone + 'static,
+    P::Connection: 'static,
+    <P::Connection as Connection>::Error: Send + Sync + 'static,
+{
+    /// Create a new Postgres transaction service from a reference-counted Pool
+    pub fn new(pool: Arc<P>) -> Self {
+        Self {
+            pool: transaction::Pool::new(pool),
+        }
+    }
+
+    /// Begin a Postgres transaction, returning a unique ID for the transaction
+    #[tracing::instrument(skip(self))]
+    pub async fn begin(&self, key: P::Key) -> Result<Uuid, Error<P>> {
+        tracing::info!("Beginning transaction");
+
+        let transaction_id = self.pool.begin(key).await?;
+
+        Ok(transaction_id)
+    }
+
+    /// Query an active Postgres transaction by ID and connection pool key
+    #[tracing::instrument(skip(self))]
+    pub async fn query(
+        &self,
+        id: Uuid,
+        key: P::Key,
+        statement: &str,
+        parameters: &[Parameter],
+    ) -> Result<<P::Connection as Connection>::RowStream, Error<P>> {
+        tracing::info!("Querying transaction");
+
+        let transaction_key = transaction::Key::new(key, id);
+
+        let rows = self
+            .pool
+            .get_connection(transaction_key)
+            .await?
+            .query(statement, parameters)
+            .await
+            .map_err(transaction::Error::Connection)?;
+
+        Ok(rows)
+    }
+
+    /// Commit an active Postgres transaction by ID and connection pool key
+    #[tracing::instrument(skip(self))]
+    pub async fn commit(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
+        tracing::info!("Committing transaction");
+
+        self.pool.commit(id, key).await?;
+
+        Ok(())
+    }
+
+    /// Roll back an active Postgres transaction by ID and connection pool key
+    #[tracing::instrument(skip(self))]
+    pub async fn rollback(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
+        tracing::info!("Rolling back transaction");
+
+        self.pool.rollback(id, key).await?;
+
+        Ok(())
     }
 }
 
 /// gRPC service implementation for Transaction service
 #[tonic::async_trait]
-impl GrpcService for Transaction<Pool> {
+impl<P> GrpcService for Transaction<P>
+where
+    P: Pool + 'static,
+    P::Key: FromRequest + Hash + Eq + Clone,
+{
     type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
 
     #[tracing::instrument(skip(self))]
@@ -37,12 +109,8 @@ impl GrpcService for Transaction<Pool> {
         &self,
         mut request: Request<TransactionQueryRequest>,
     ) -> Result<Response<Self::QueryStream>, Status> {
-        // derive a role from extensions to use as a connection pool key
-        let role = request
-            .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+        // derive a key from extensions to use as a connection pool key
+        let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
 
         // get the request values
         let TransactionQueryRequest {
@@ -58,25 +126,22 @@ impl GrpcService for Transaction<Pool> {
         // convert values to valid parameters
         let value_count = values.len();
 
-        let parameters: Vec<_> = values
-            .into_iter()
-            .filter_map(parameter::from_proto_value)
-            .collect();
+        let parameters: Vec<_> = values.into_iter().map(Parameter::from).collect();
 
         if parameters.len() < value_count {
             return Err(
                 Status::invalid_argument(
                     "Invalid parameter values found. Only numbers, strings, boolean, and null values permitted"
-                    )
-                );
+                )
+            );
         }
 
         // get the rows, converting output to proto-compatible structs and statuses
-        let rows = Transaction::query(self, id, role, &statement, &parameters)
+        let rows = Transaction::query(self, id, key, &statement, &parameters)
             .await
-            .map_err(transaction_error_to_status)?
-            .map_ok(json::map::to_proto_struct)
-            .map_err(error_to_status);
+            .map_err(Into::<Status>::into)?
+            .map_ok(Into::into)
+            .map_err(Into::<Status>::into);
 
         // create the row stream transmitter and receiver
         let (transmitter, receiver) = tokio::sync::mpsc::channel(100);
@@ -96,38 +161,24 @@ impl GrpcService for Transaction<Pool> {
     }
 
     async fn begin(&self, mut request: Request<()>) -> Result<Response<BeginResponse>, Status> {
-        // derive a role from extensions to use as a connection pool key
-        let role = request
-            .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
-
-        let id = Transaction::begin(self, role)
-            .await
-            .map_err(transaction_error_to_status)?
-            .to_string();
+        // derive a key from extensions to use as a connection pool key
+        let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
+        let id = Transaction::begin(self, key).await?.to_string();
 
         Ok(Response::new(BeginResponse { id }))
     }
 
     async fn commit(&self, mut request: Request<CommitRequest>) -> Result<Response<()>, Status> {
-        // derive a role from extensions to use as a connection pool key
-        let role = request
-            .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+        // derive a key from extensions to use as a connection pool key
+        let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
 
         let CommitRequest { id } = request.get_ref();
 
-        let id = Uuid::parse_str(&id).map_err(|_| {
+        let id = Uuid::parse_str(id).map_err(|_| {
             Status::invalid_argument("Transaction ID in request had unrecognized format")
         })?;
 
-        Transaction::commit(self, id, role)
-            .await
-            .map_err(transaction_error_to_status)?;
+        Transaction::commit(self, id, key).await?;
 
         Ok(Response::new(()))
     }
@@ -136,22 +187,16 @@ impl GrpcService for Transaction<Pool> {
         &self,
         mut request: Request<RollbackRequest>,
     ) -> Result<Response<()>, Status> {
-        // derive a role from extensions to use as a connection pool key
-        let role = request
-            .extensions_mut()
-            .remove::<extensions::Postgres>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
+        // derive a key from extensions to use as a connection pool key
+        let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
 
         let RollbackRequest { id } = request.get_ref();
 
-        let id = Uuid::parse_str(&id).map_err(|_| {
+        let id = Uuid::parse_str(id).map_err(|_| {
             Status::invalid_argument("Transaction ID in request had unrecognized format")
         })?;
 
-        Transaction::rollback(self, id, role)
-            .await
-            .map_err(transaction_error_to_status)?;
+        Transaction::rollback(self, id, key).await?;
 
         Ok(Response::new(()))
     }

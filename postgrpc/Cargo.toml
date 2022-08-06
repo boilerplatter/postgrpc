@@ -5,11 +5,20 @@ authors = ["Alex Pearson <alex@platter.dev>"]
 edition = "2021"
 description = "A JSON-transcoding-ready gRPC server for querying Postgres"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "postgrpc"
+path = "src/main.rs"
+doc = false
+required-features = ["server"]
+
 [build-dependencies]
 tonic-build = "0.8.0"
 
 [dependencies]
-envy = "0.4.2"
+async-trait = "0.1.57"
 futures-util = "0.3.21"
 prost = "0.11.0"
 prost-types = "0.11.1"
@@ -18,30 +27,47 @@ thiserror = "1.0.32"
 tokio-stream = "0.1.9"
 tonic-reflection = "0.5.0"
 tracing = "0.1.36"
-tracing-futures = "0.2.5"
 uuid = "1.1.2"
 
-# TODO:
-# - split postgrpc and postgrpc-lib (i.e. a tower layer)
-# - consolidate most of these workspace items into postgrpc-lib
-
-[dependencies.postgres-pool]
-path = "../postgres-pool"
-
-[dependencies.postgres-role-json-pool]
-path = "../postgres-role-json-pool"
-
-[dependencies.postgres-services]
-path = "../postgres-services"
-
-[dependencies.postgres-transaction-pool]
+[dependencies.bytes]
 optional = true
-path = "../postgres-transaction-pool"
+version = "1.2.1"
+
+[dependencies.deadpool-postgres]
+optional = true
+features = ["serde"]
+version = "0.10.2"
+
+[dependencies.envy]
+optional = true
+version = "0.4.2"
+
+[dependencies.native-tls]
+optional = true
+version = "0.2.10"
+
+[dependencies.pin-project-lite]
+optional = true
+version = "0.2.9"
+
+[dependencies.postgres-native-tls]
+optional = true
+version = "0.5.0"
+
+[dependencies.serde]
+optional = true
+features = ["derive"]
+version = "1.0.142"
 
 [dependencies.tokio]
 default-features = false
 features = ["macros", "signal", "rt-multi-thread"]
 version = "1.20.1"
+
+[dependencies.tokio-postgres]
+optional = true
+features = ["with-serde_json-1"]
+version = "0.7.6"
 
 [dependencies.tonic]
 default-features = false
@@ -58,13 +84,16 @@ features = ["env-filter"]
 version = "0.3.15"
 
 [features]
-default = ["transaction", "ssl-native-tls", "role-header"]
-transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
-ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
-role-header = []
+default = ["server", "transaction", "ssl-native-tls", "deadpool", "health"]
+transaction = ["uuid/v4", "to-sql"]
+ssl-native-tls = ["native-tls", "postgres-native-tls", "to-sql"]
+server = ["envy", "serde"]
+deadpool = ["deadpool-postgres", "pin-project-lite", "role-header", "to-sql"]
+to-sql = ["tokio-postgres", "bytes"]
+role-header = [] # FIXME: enable library of useful, composable extensions
+health = []
 
 # TODO: features
-# - connection pooling (choose between implementations... custom? or deadpool et al?)
 # - channels (enable LISTEN + NOTIFY based channels)
 # - json (enable native JSON transcoding)
 # - lib-features: valuable support

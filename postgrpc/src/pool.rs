@@ -1,15 +1,61 @@
 //! Connection-pooling traits for databases (like Postgres) that handle custom
 //! connection-fetching logic, query parameterization, and custom streaming output types.
-#![deny(missing_docs, unreachable_pub)]
-
 pub use async_trait::async_trait;
-use futures_core::TryStream;
+use futures_util::TryStream;
+use prost_types::value::Kind;
 use std::fmt;
+use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
+use tonic::{Request, Status};
 
-/// Connection behavior across database connection types. This trait is generic over
-/// its query parameter types, allowing for custom input types or limited subsets of otherwise acceptable inputs.
-/// Connections also define their own output types (i.e. `RowStream`), which can also be
-/// customized as needed.
+// FIXME: update the documentation in this module
+/// Newtype wrapper around gRPC values
+#[derive(Debug)]
+pub struct Parameter(prost_types::Value);
+
+/// Binary encoding for Parameters
+impl ToSql for Parameter {
+    fn to_sql(
+        &self,
+        type_: &Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>>
+    where
+        Self: Sized,
+    {
+        match &self.0.kind {
+            // FIXME: handle lists and structs separately from NULL
+            Some(Kind::ListValue(..) | Kind::StructValue(..) | Kind::NullValue(..)) | None => {
+                Ok(IsNull::Yes)
+            }
+            Some(Kind::BoolValue(boolean)) => boolean.to_sql(type_, out),
+            Some(Kind::StringValue(text)) => text.to_sql(type_, out),
+            Some(Kind::NumberValue(number)) => match *type_ {
+                Type::INT2 => (*number as i16).to_sql(type_, out),
+                Type::INT4 => (*number as i32).to_sql(type_, out),
+                Type::INT8 => (*number as i64).to_sql(type_, out),
+                Type::FLOAT4 => (*number as f32).to_sql(type_, out),
+                Type::FLOAT8 => (*number as f64).to_sql(type_, out),
+                // ToSql should not be used for type-inferred parameters of format text
+                _ => Err(format!("Cannot encode number as type {}", type_).into()),
+            },
+        }
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+
+    to_sql_checked!();
+}
+
+impl From<prost_types::Value> for Parameter {
+    fn from(value: prost_types::Value) -> Self {
+        Self(value)
+    }
+}
+
+/// gRPC-compatible connection behavior across database connection types. All inputs and outputs
+/// are based on prost well-known-types.
 ///
 /// ## Example:
 ///
@@ -42,21 +88,18 @@ use std::fmt;
 /// ```
 #[async_trait]
 pub trait Connection: Send + Sync {
-    /// Accepted parameter type for this connection to use during queries
-    type Parameter: fmt::Debug + Send + Sync;
-
-    /// A fallible stream of data returned from query (usually rows from the database)
-    type RowStream: TryStream<Error = Self::Error> + Send + Sync;
+    /// A fallible stream of rows returned from the database as protobuf structs
+    type RowStream: TryStream<Ok = prost_types::Struct, Error = Self::Error> + Send + Sync;
 
     /// Error type on the connection encompassing top-level errors (i.e. "bad connection") and
     /// errors within a RowStream
-    type Error: std::error::Error;
+    type Error: std::error::Error + Into<Status> + Send + Sync;
 
     /// Run a query parameterized by the Connection's associated Parameter, returning a RowStream
     async fn query(
         &self,
         statement: &str,
-        parameters: &[Self::Parameter],
+        parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error>;
 
     /// Run a set of SQL statements using the simple query protocol
@@ -121,14 +164,30 @@ pub trait Connection: Send + Sync {
 pub trait Pool: Send + Sync {
     /// The key by which connections are selected from the Pool, allowing for custom
     /// connection-fetching logic in Pool implementations
-    type Key: fmt::Debug;
+    type Key: fmt::Debug + Send + Sync;
 
     /// The underlying connection type returned from the Pool
     type Connection: Connection;
 
     /// Errors related to fetching Connections from the Pool
-    type Error: std::error::Error;
+    type Error: std::error::Error
+        + From<<Self::Connection as Connection>::Error>
+        + Into<Status>
+        + Send
+        + Sync;
 
     /// Get a single connection from the pool using some key
     async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error>;
+}
+
+/// Helper trait to encapsulate logic for deriving values from gRPC requests
+pub trait FromRequest
+where
+    Self: Sized,
+{
+    /// Errors associated with deriving a value from a gRPC response
+    type Error: std::error::Error + Into<Status>;
+
+    /// Derive a value from a gRPC request
+    fn from_request<T>(request: &mut Request<T>) -> Result<Self, Self::Error>;
 }

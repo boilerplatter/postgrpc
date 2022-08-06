@@ -295,6 +295,7 @@ dependencies = [
  "deadpool-runtime",
  "num_cpus",
  "retain_mut",
+ "serde",
  "tokio",
 ]
 
@@ -306,6 +307,7 @@ checksum = "c668a58063c6331e3437e3146970943ad82b1b36169fd979bb2645ac2088209a"
 dependencies = [
  "deadpool",
  "log",
+ "serde",
  "tokio",
  "tokio-postgres",
 ]
@@ -1136,24 +1138,27 @@ dependencies = [
 name = "postgrpc"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
+ "deadpool-postgres",
  "envy",
  "futures-util",
- "postgres-pool",
- "postgres-role-json-pool",
- "postgres-services",
- "postgres-transaction-pool",
+ "native-tls",
+ "pin-project-lite",
+ "postgres-native-tls",
  "prost 0.11.0",
  "prost-types 0.11.1",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-postgres",
  "tokio-stream",
  "tonic",
  "tonic-build",
  "tonic-reflection",
  "tower-http",
  "tracing",
- "tracing-futures",
  "tracing-subscriber 0.3.15",
  "uuid",
 ]

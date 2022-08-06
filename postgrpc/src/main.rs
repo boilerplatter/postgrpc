@@ -1,24 +1,22 @@
+use configuration::Configuration;
+#[cfg(feature = "health")]
 use health::Health;
-use postgres_role_json_pool::{
-    configuration::{self, Configuration},
-    Pool,
-};
-use postgres_services::postgres::Postgres;
-#[cfg(feature = "transaction")]
-use postgres_services::transaction::Transaction;
+use postgres::Postgres;
+use postgrpc::pools::deadpool; // FIXME: configure pool types through the feature
 #[cfg(feature = "transaction")]
 use proto::transaction::transaction_server::TransactionServer;
 use proto::{health::health_server::HealthServer, postgres::postgres_server::PostgresServer};
 use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
-use tonic::{transport::Server, Status};
+use tonic::transport::Server;
+#[cfg(feature = "transaction")]
+use transaction::Transaction;
 
-mod extensions;
+mod configuration;
 mod health;
 mod logging;
 mod postgres;
-mod protocol;
 #[cfg(feature = "transaction")]
 mod transaction;
 mod proto {
@@ -33,6 +31,7 @@ mod proto {
         tonic::include_proto!("transaction");
     }
 
+    #[cfg(feature = "health")]
     pub mod health {
         tonic::include_proto!("health");
     }
@@ -47,26 +46,13 @@ enum Error {
     #[error("Tracing error: {0}")]
     Logging(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error(transparent)]
-    Pool(#[from] postgres_role_json_pool::Error),
+    Pool(#[from] deadpool::Error),
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
     #[error("Error setting up SIGTERM handler: {0}")]
     SigTerm(#[from] std::io::Error),
     #[error("Error in gRPC transport: {0}")]
     Transport(#[from] tonic::transport::Error),
-}
-
-/// map default pool errors to proper gRPC statuses
-fn error_to_status(error: postgres_role_json_pool::Error) -> Status {
-    let message = error.to_string();
-
-    match error {
-        postgres_role_json_pool::Error::Params { .. }
-        | postgres_role_json_pool::Error::Role(..)
-        | postgres_role_json_pool::Error::Query(..) => Status::invalid_argument(message),
-        postgres_role_json_pool::Error::Pool(..) => Status::resource_exhausted(message),
-        postgres_role_json_pool::Error::InvalidJson => Status::internal(message),
-    }
 }
 
 /// Run the app in a Result-contained function
@@ -100,7 +86,9 @@ async fn run_service() -> Result<(), Error> {
     let address = SocketAddr::from(&configuration);
 
     // build a shared connection pool from configuration
-    let pool = Pool::try_from(configuration).map(Arc::new)?;
+    // FIXME: assign based on features
+    let pool = deadpool::Pool::try_from(configuration).map(Arc::new)?;
+    let interceptor = deadpool::interceptor;
 
     // set up the gRPC reflection service
     let reflection = tonic_reflection::server::Builder::configure()
@@ -109,17 +97,19 @@ async fn run_service() -> Result<(), Error> {
 
     // set up the server with configured services
     // FIXME: use tonic_health
-    let health_service = HealthServer::new(Health::new(Arc::clone(&pool)));
+    let health_service = if cfg!(feature = "health") {
+        Some(HealthServer::new(Health::new(Arc::clone(&pool))))
+    } else {
+        None
+    };
 
-    let postgres_service = PostgresServer::with_interceptor(
-        Postgres::new(Arc::clone(&pool)),
-        extensions::Postgres::interceptor,
-    );
+    let postgres_service =
+        PostgresServer::with_interceptor(Postgres::new(Arc::clone(&pool)), interceptor);
 
     let transaction_service = if cfg!(feature = "transaction") {
         Some(TransactionServer::with_interceptor(
             Transaction::new(pool),
-            extensions::Postgres::interceptor,
+            interceptor,
         ))
     } else {
         None
@@ -130,8 +120,8 @@ async fn run_service() -> Result<(), Error> {
     Server::builder()
         .layer(logging::create())
         .add_service(reflection)
-        .add_service(health_service)
         .add_service(postgres_service)
+        .add_optional_service(health_service)
         .add_optional_service(transaction_service)
         .serve_with_shutdown(address, shutdown)
         .await?;

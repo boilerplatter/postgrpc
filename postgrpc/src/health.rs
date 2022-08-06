@@ -3,7 +3,7 @@ use crate::proto::health::{
     HealthCheckResponse,
 };
 use futures_util::{pin_mut, stream, StreamExt};
-use postgres_pool::{Connection, Pool};
+use postgrpc::pool::{Connection, Pool};
 use std::{hash::Hash, sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -16,7 +16,7 @@ where
 {
     pool: Arc<P>,
     #[cfg(feature = "transaction")]
-    transactions: postgres_transaction_pool::Pool<P>,
+    transactions: postgrpc::pools::transaction::Pool<P>,
 }
 
 impl<P> Clone for Health<P>
@@ -42,7 +42,7 @@ where
     pub fn new(pool: Arc<P>) -> Self {
         Self {
             #[cfg(feature = "transaction")]
-            transactions: postgres_transaction_pool::Pool::new(Arc::clone(&pool)),
+            transactions: postgrpc::pools::transaction::Pool::new(Arc::clone(&pool)),
             pool,
         }
     }
@@ -73,7 +73,7 @@ where
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
-        let transaction_key = postgres_transaction_pool::Key::new(key.clone(), id);
+        let transaction_key = postgrpc::pools::transaction::Key::new(key.clone(), id);
 
         // attempt to retrieve the active transaction
         let transaction = self

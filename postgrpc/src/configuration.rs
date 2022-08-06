@@ -1,4 +1,4 @@
-use super::Pool;
+use super::deadpool::Pool;
 use serde::{Deserialize, Deserializer};
 use std::{
     convert::TryFrom,
@@ -11,6 +11,8 @@ use thiserror::Error;
 use native_tls::TlsConnector;
 #[cfg(feature = "ssl-native-tls")]
 use postgres_native_tls::MakeTlsConnector;
+
+// FIXME: disambiguate between SERVER configuration and POOL configuration
 
 /// Pool configuration errors
 #[derive(Debug, Error)]
@@ -97,6 +99,7 @@ impl From<&Configuration> for SocketAddr {
 }
 
 /// Derive a default pool from this configuration
+// FIXME: allow for deeper pool configuration for each kind of pool
 impl TryFrom<Configuration> for Pool {
     type Error = Error;
 

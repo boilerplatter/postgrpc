@@ -1,9 +1,7 @@
-//! A database transaction meta-pool built on `postgres-pool`. This pool handles auto-vaccuming of
+//! A database transaction meta-pool. This pool handles auto-vaccuming of
 //! inactive transactions at configurable thresholds.
 
-#![deny(missing_docs, unreachable_pub)]
-
-use postgres_pool::Connection;
+use crate::pool::{Connection, Parameter};
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -12,6 +10,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tonic::Status;
 use uuid::Uuid;
 
 /// Transaction pool errors
@@ -29,6 +28,28 @@ where
     /// Transaction was called before `begin` or after `commit`/`rollback`
     #[error("Requested transaction has not been initialized or was cleaned up due to inactivity")]
     Uninitialized,
+}
+
+impl<C> From<Error<C>> for Status
+where
+    C: std::error::Error + Into<Status> + 'static,
+{
+    fn from(error: Error<C>) -> Self {
+        match error {
+            Error::Connection(error) => error.into(),
+            Error::ConnectionFailure => Status::resource_exhausted(error.to_string()),
+            Error::Uninitialized => Status::not_found(error.to_string()),
+        }
+    }
+}
+
+impl<C> From<C> for Error<C>
+where
+    C: std::error::Error + Into<Status> + 'static,
+{
+    fn from(connection_error: C) -> Self {
+        Self::Connection(connection_error)
+    }
 }
 
 // TODO: make these values configurable
@@ -87,7 +108,6 @@ where
     C: Connection + Send + Sync + 'static,
 {
     type Error = C::Error;
-    type Parameter = C::Parameter;
     type RowStream = C::RowStream;
 
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
@@ -100,7 +120,7 @@ where
     async fn query(
         &self,
         statement: &str,
-        parameters: &[Self::Parameter],
+        parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
         let rows = self.connection.query(statement, parameters).await?;
         let mut last_used_at = self.last_used_at.write().await;
@@ -139,7 +159,7 @@ pub type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
 /// Pool of active transactions that wraps a lower-level Pool implementation
 pub struct Pool<P>
 where
-    P: postgres_pool::Pool,
+    P: crate::pool::Pool,
     P::Key: Hash + Eq + Clone,
 {
     pool: Arc<P>,
@@ -148,7 +168,7 @@ where
 
 impl<P> Clone for Pool<P>
 where
-    P: postgres_pool::Pool,
+    P: crate::pool::Pool,
     P::Key: Hash + Eq + Clone,
 {
     fn clone(&self) -> Self {
@@ -161,7 +181,7 @@ where
 
 impl<P> Pool<P>
 where
-    P: postgres_pool::Pool + 'static,
+    P: crate::pool::Pool + 'static,
     P::Key: Hash + Eq + Send + Sync + Clone + 'static,
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + 'static,
@@ -316,12 +336,12 @@ where
 }
 
 #[async_trait::async_trait]
-impl<P> postgres_pool::Pool for Pool<P>
+impl<P> crate::pool::Pool for Pool<P>
 where
-    P: postgres_pool::Pool,
+    P: crate::pool::Pool,
     P::Key: Hash + Eq + Send + Sync + Clone,
     P::Connection: 'static,
-    <P::Connection as Connection>::Error: Send + Sync + 'static,
+    <P::Connection as Connection>::Error: Send + Sync + Into<Status> + 'static,
 {
     type Key = Key<P::Key>;
     type Connection = Transaction<P::Connection>;

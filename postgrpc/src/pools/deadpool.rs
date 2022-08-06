@@ -3,25 +3,20 @@
 //! then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
 //! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 //! returning rows as a stream of JSON Objects.
-#![deny(missing_docs, unreachable_pub)]
-
-use futures_core::{ready, Stream};
+use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
-use postgres_pool::Connection;
+use crate::{pool::{Connection, Parameter, FromRequest}, json};
 use std::{
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 use thiserror::Error;
-use tokio_postgres::{
+use deadpool_postgres::tokio_postgres::{
     error::SqlState,
-    types::{to_sql_checked, IsNull, ToSql, Type},
     RowStream, Statement,
 };
-
-/// Configure the connection pool
-pub mod configuration;
+use tonic::{Request, Status};
 
 /// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
@@ -39,18 +34,47 @@ pub enum Error {
     Pool(#[from] deadpool_postgres::PoolError),
     /// Bubbled-up `tokio_postgres` SQL-level errors within a connection
     #[error("SQL Query error: {0}")]
-    Query(#[from] tokio_postgres::Error),
+    Query(#[from] deadpool_postgres::tokio_postgres::Error),
     /// ROLE-setting errors before connections are returned to users
     #[error("Unable to set the ROLE of the connection before use: {0}")]
-    Role(tokio_postgres::Error),
+    Role(deadpool_postgres::tokio_postgres::Error),
     /// JSON-formatted rows could not be properly converted between Postgres' built-in `to_json()` output and
     /// `serde_json::Value`. If this error occurs, it is probably a bug in `serde_json` or Postgres itself.
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
 }
 
+impl From<Error> for Status {
+    fn from(error: Error) -> Self {
+        let message = error.to_string();
+
+        match error {
+            Error::Params { .. } | Error::Role(..) | Error::Query(..) => {
+                Status::invalid_argument(message)
+            }
+            Error::Pool(..) => Status::resource_exhausted(message),
+            Error::InvalidJson => Status::internal(message),
+        }
+    }
+}
+
 /// Optionally-derived Role key for the default pool
 type Role = Option<String>;
+
+impl FromRequest for Role {
+    type Error = Status;
+
+    fn from_request<T>(request: &mut Request<T>) -> Result<Self, Self::Error> {
+        let role = request
+            .extensions_mut()
+            .remove::<RoleExtension>()
+            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
+            .role;
+
+
+        Ok(role)
+    }
+}
 
 /// Deadpool-based pool implementation keyed by ROLE pointing to a single database
 // database connections are initiated from a single user and shared through SET LOCAL ROLE
@@ -62,7 +86,7 @@ pub struct Pool {
 
 impl Pool {
     /// Create a new pool from `deadpool_postgres`'s constituent parts
-    fn new(pool: deadpool_postgres::Pool, statement_timeout: Option<Duration>) -> Self {
+    pub fn new(pool: deadpool_postgres::Pool, statement_timeout: Option<Duration>) -> Self {
         Self {
             pool,
             statement_timeout,
@@ -71,7 +95,7 @@ impl Pool {
 }
 
 #[async_trait::async_trait]
-impl postgres_pool::Pool for Pool {
+impl crate::pool::Pool for Pool {
     type Key = Role;
     type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
@@ -106,14 +130,14 @@ impl postgres_pool::Pool for Pool {
 
 pin_project! {
     /// The stream of JSON-formatted rows returned by this pool's associated connection
-    pub struct JsonStream {
+    pub struct StructStream {
         #[pin]
         rows: RowStream,
     }
 }
 
-impl Stream for JsonStream {
-    type Item = Result<serde_json::Map<String, serde_json::Value>, Error>;
+impl Stream for StructStream {
+    type Item = Result<prost_types::Struct, Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -121,7 +145,7 @@ impl Stream for JsonStream {
         match ready!(this.rows.poll_next(context)?) {
             Some(row) => {
                 if let serde_json::Value::Object(map) = row.try_get("json")? {
-                    Poll::Ready(Some(Ok(map)))
+                    Poll::Ready(Some(Ok(json::map::to_proto_struct(map))))
                 } else {
                     Poll::Ready(Some(Err(Error::InvalidJson)))
                 }
@@ -131,7 +155,7 @@ impl Stream for JsonStream {
     }
 }
 
-impl From<RowStream> for JsonStream {
+impl From<RowStream> for StructStream {
     fn from(rows: RowStream) -> Self {
         Self { rows }
     }
@@ -145,13 +169,12 @@ pub struct Client {
 #[async_trait::async_trait]
 impl Connection for Client {
     type Error = Error;
-    type Parameter = Parameter;
-    type RowStream = JsonStream;
+    type RowStream = StructStream;
 
     async fn query(
         &self,
         statement: &str,
-        parameters: &[Self::Parameter],
+        parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
         // prepare the statement using the statement cache
         let prepared_statement = self.client.prepare_cached(statement).await?;
@@ -180,7 +203,7 @@ impl Connection for Client {
             result => result,
         }?;
 
-        Ok(JsonStream::from(rows))
+        Ok(StructStream::from(rows))
     }
 
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
@@ -223,67 +246,37 @@ async fn query_raw(
     Ok(rows)
 }
 
-/// Accepted parameter types from JSON
-#[derive(Debug)]
-pub enum Parameter {
-    /// JSON's `null`
-    Null,
-    /// JSON's boolean values
-    Boolean(bool),
-    /// JSON's number values
-    Number(f64),
-    /// JSON's string values, also used here as a catch-all for type inference
-    Text(String),
+#[cfg(feature = "role-header")]
+const ROLE_HEADER: &str = "x-postgres-role";
+
+/// X-postgres-* headers collected into a single extension
+struct RoleExtension {
+    role: Option<String>,
 }
 
-impl Parameter {
-    /// convert serde JSON values to scalar parameters
-    // TODO: consider relaxing the scalar constraint for specific cases
-    // (e.g. ListValues of a single type and JSON/serializable composite types for StructValues)
-    pub fn from_json_value(value: serde_json::Value) -> Option<Self> {
-        match value {
-            serde_json::Value::Array(..) | serde_json::Value::Object(..) => None,
-            serde_json::Value::Null => Some(Parameter::Null),
-            serde_json::Value::Bool(boolean) => Some(Parameter::Boolean(boolean)),
-            serde_json::Value::Number(number) => {
-                number.as_f64().map(|number| Parameter::Number(number))
-            }
-            serde_json::Value::String(text) => Some(Parameter::Text(text)),
-        }
-    }
-}
+/// Interceptor function for collecting the extensions needed by the deadpool pool
+pub fn interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
+    // derive the role from metadata
+    #[cfg(feature = "role-header")]
+    let role = request
+        .metadata()
+        .get(ROLE_HEADER)
+        .map(|header| header.to_str())
+        .transpose()
+        .map_err(|error| {
+            let message = format!("Invalid {} header: {}", ROLE_HEADER, error);
 
-/// Binary encoding for Parameters
-impl ToSql for Parameter {
-    fn to_sql(
-        &self,
-        type_: &Type,
-        out: &mut bytes::BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>>
-    where
-        Self: Sized,
-    {
-        match self {
-            Self::Null => Ok(IsNull::Yes),
-            Self::Boolean(boolean) => boolean.to_sql(type_, out),
-            Self::Text(text) => text.to_sql(type_, out),
-            Self::Number(number) => match type_ {
-                &Type::INT2 => (*number as i16).to_sql(type_, out),
-                &Type::INT4 => (*number as i32).to_sql(type_, out),
-                &Type::INT8 => (*number as i64).to_sql(type_, out),
-                &Type::FLOAT4 => (*number as f32).to_sql(type_, out),
-                &Type::FLOAT8 => (*number as f64).to_sql(type_, out),
-                // ToSql should not be used for type-inferred parameters of format text
-                _ => Err(format!("Cannot encode number as type {}", type_).into()),
-            },
-        }
-    }
+            Status::invalid_argument(message)
+        })?
+        .map(String::from);
 
-    fn accepts(_: &Type) -> bool {
-        true
-    }
+    #[cfg(not(feature = "role-header"))]
+    let role = None;
 
-    to_sql_checked!();
+    // add the Postgres extension to the request
+    request.extensions_mut().insert(RoleExtension { role });
+
+    Ok(request)
 }
 
 // TODO: add unit tests

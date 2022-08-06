@@ -13,6 +13,7 @@ service Postgres {
   }
 }
 
+// TODO: consider more explicit parameter type that maps more closely to postgres internals
 message QueryRequest {
   string statement = 1;
   repeated google.protobuf.Value values = 2;

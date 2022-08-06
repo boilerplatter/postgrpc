@@ -11,18 +11,6 @@ Query your Postgres databases directly using gRPC or transcoded JSON.
 ### PostgRPC
 (release pending)
 
-### postgres-services
-(release pending)
-
-### postgres-pool
-(release pending)
-
-### postgres-role-json-pool
-(release pending)
-
-### postgres-transaction-pool
-(release pending)
-
 ## Table of Contents
 
 1. [Introduction](#introduction)
@@ -56,7 +44,7 @@ PostgRPC fills a similar niche as the excellent [PostgREST](https://postgrest.or
 - **Primitive Focus**: where Postgres has a feature, PostgRPC should support that feature through the query interface. Where this is impossible, PostgRPC should strive to provide a distributed equivalent.
 - **Ease-of-Use**: those looking to get started with PostgRPC should be able to spin it up as a service quickly on a variety of systems. PostgRPC should ship with sane defaults for most use-cases.
 - **Type Inference**: PostgRPC should accomdate the flexibility of JSON in inputs and outputs rather than mapping JSON or `gRPC` types to Postgres types. This includes leveraging Postgres's built-in type inference wherever possible.
-- **Customization**: PostgRPC should be a reference implementation of a `gRPC` service that can be easily re-implemented over custom connection pool logic. `postgres-services` should be usable by anyone looking to use a different protocol to query connection pools that implement the `Pool` and `Connection` traits from `postgres-pool`.
+- **Customization**: PostgRPC should be a reference implementation of a `gRPC` service that can be easily re-implemented over custom connection pool logic.
 
 ### Non-Goals
 
