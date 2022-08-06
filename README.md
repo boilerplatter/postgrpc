@@ -85,8 +85,6 @@ PostgRPC can be configured with the following environment variables:
 - `PGPASSWORD` (required): the password of the user to use when connecting to the Postgres database.
 - `PGPORT`: the port of the Postgres cluster to connect to. Defaults to `5432`.
 - `PGUSER` (required): the user to use when connecting to the Postgres database
-- `ALLOWED_STATEMENTS`: [CORS-like](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) set of allowed statements in queries. Possible values are `*` for all statements (the default), an empty string for no allowed statements (effectively disabling the query interface), or a comma-separated list of allowed statements. Possible statements are `SELECT`, `INSERT`, `UPDATE`, and `DELETE`.
-- `ALLOWED_FUNCTIONS`: [CORS-like](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) set of function names that can be executed in queries. Possible values are `*` for all functions (the default), an empty string for no allowed functions, or a comma-separated list of allowed function names, e.g. `to_json,pg_sleep`, etc.
 
 ### Usage
 

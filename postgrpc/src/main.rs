@@ -66,7 +66,6 @@ fn error_to_status(error: postgres_role_json_pool::Error) -> Status {
         | postgres_role_json_pool::Error::Query(..) => Status::invalid_argument(message),
         postgres_role_json_pool::Error::Pool(..) => Status::resource_exhausted(message),
         postgres_role_json_pool::Error::InvalidJson => Status::internal(message),
-        postgres_role_json_pool::Error::Cors(..) => Status::permission_denied(message),
     }
 }
 
@@ -109,30 +108,35 @@ async fn run_service() -> Result<(), Error> {
         .build()?;
 
     // set up the server with configured services
-    let server = Server::builder()
-        .layer(logging::create())
-        .add_service(reflection)
-        .add_service(HealthServer::new(Health::new(Arc::clone(&pool))))
-        .add_service(PostgresServer::with_interceptor(
-            Postgres::new(Arc::clone(&pool)),
-            extensions::Postgres::interceptor,
-        ));
+    // FIXME: use tonic_health
+    let health_service = HealthServer::new(Health::new(Arc::clone(&pool)));
 
-    tracing::info!(address = %&address, "PostgRPC service starting");
+    let postgres_service = PostgresServer::with_interceptor(
+        Postgres::new(Arc::clone(&pool)),
+        extensions::Postgres::interceptor,
+    );
 
-    #[cfg(feature = "transaction")]
-    server
-        .add_service(TransactionServer::with_interceptor(
+    let transaction_service = if cfg!(feature = "transaction") {
+        Some(TransactionServer::with_interceptor(
             Transaction::new(pool),
             extensions::Postgres::interceptor,
         ))
+    } else {
+        None
+    };
+
+    tracing::info!(%address, "PostgRPC service starting");
+
+    Server::builder()
+        .layer(logging::create())
+        .add_service(reflection)
+        .add_service(health_service)
+        .add_service(postgres_service)
+        .add_optional_service(transaction_service)
         .serve_with_shutdown(address, shutdown)
         .await?;
 
-    #[cfg(not(feature = "transaction"))]
-    server.serve_with_shutdown(address, shutdown).await?;
-
-    tracing::info!(address = %&address, "PostgRPC service stopped");
+    tracing::info!(%address, "PostgRPC service stopped");
 
     Ok(())
 }
@@ -140,6 +144,6 @@ async fn run_service() -> Result<(), Error> {
 #[tokio::main]
 async fn main() {
     if let Err(error) = run_service().await {
-        tracing::error!(error = ?&error, "PostgRPC service error! Process stopped");
+        tracing::error!(?error, "PostgRPC service error! Process stopped");
     }
 }

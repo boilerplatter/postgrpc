@@ -6,10 +6,10 @@ edition = "2021"
 description = "Distributed transaction pool for Postgres"
 
 [dependencies]
-async-trait = "0.1.51"
-futures-core = "0.3.17"
-thiserror = "1.0.29"
-tracing = "0.1.26"
+async-trait = "0.1.57"
+futures-core = "0.3.21"
+thiserror = "1.0.32"
+tracing = "0.1.36"
 
 [dependencies.postgres-pool]
 path = "../postgres-pool"
@@ -17,8 +17,8 @@ path = "../postgres-pool"
 [dependencies.tokio]
 default-features = false
 features = ["rt", "sync", "time"]
-version = "1.6.1"
+version = "1.20.1"
 
 [dependencies.uuid]
 features = ["v4"]
-version = "0.8.2"
+version = "1.1.2"

@@ -6,9 +6,9 @@ edition = "2021"
 description = "Request + Response interfaces for Postgres connection pools"
 
 [dependencies]
-tracing = "0.1.26"
-thiserror = "1.0.29"
-uuid = "0.8.2"
+tracing = "0.1.36"
+thiserror = "1.0.32"
+uuid = "1.1.2"
 
 [dependencies.postgres-transaction-pool]
 optional = true

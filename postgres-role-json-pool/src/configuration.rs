@@ -1,7 +1,5 @@
 use super::Pool;
 use serde::{Deserialize, Deserializer};
-#[cfg(feature = "postguard")]
-use std::str::FromStr;
 use std::{
     convert::TryFrom,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -18,8 +16,8 @@ use postgres_native_tls::MakeTlsConnector;
 #[derive(Debug, Error)]
 pub enum Error {
     /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
-    #[error("Error configuring the connection pool: {0}")]
-    Configuration(#[from] deadpool_postgres::config::ConfigError),
+    #[error("Error creating the connection pool: {0}")]
+    Create(#[from] deadpool_postgres::CreatePoolError),
     #[cfg(feature = "ssl-native-tls")]
     /// TLS errors during setup of SSL connectors
     #[error("Error setting up TLS connection: {0}")]
@@ -29,14 +27,6 @@ pub enum Error {
 /// Environment-derived configuration for the default pool
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
-    /// statement types that are allowed in queries
-    #[cfg(feature = "postguard")]
-    #[serde(default, deserialize_with = "from_statements_string")]
-    pub allowed_statements: postguard::AllowedStatements,
-    /// function (by name) that can be invoked in queries
-    #[cfg(feature = "postguard")]
-    #[serde(default, deserialize_with = "from_functions_string")]
-    pub allowed_functions: postguard::AllowedFunctions,
     /// service host IP address
     #[serde(default = "get_v4_localhost")]
     pub host: IpAddr,
@@ -99,32 +89,6 @@ where
     }
 }
 
-#[cfg(feature = "postguard")]
-/// Deserializer for allowed_statements, passed through the environment as comma-separated string
-fn from_statements_string<'de, D>(deserializer: D) -> Result<postguard::AllowedStatements, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let base_string = String::deserialize(deserializer)?;
-    let allowed_statements =
-        postguard::AllowedStatements::from_str(&base_string).map_err(serde::de::Error::custom)?;
-
-    Ok(allowed_statements)
-}
-
-#[cfg(feature = "postguard")]
-/// Deserializer for allowed_functions, passed through the environment as comma-separated string
-fn from_functions_string<'de, D>(deserializer: D) -> Result<postguard::AllowedFunctions, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let base_string = String::deserialize(deserializer)?;
-    let allowed_functions =
-        postguard::AllowedFunctions::from_str(&base_string).map_err(serde::de::Error::custom)?;
-
-    Ok(allowed_functions)
-}
-
 /// Convert configurations into a valid SocketAddr
 impl From<&Configuration> for SocketAddr {
     fn from(configuration: &Configuration) -> Self {
@@ -156,25 +120,8 @@ impl TryFrom<Configuration> for Pool {
         };
 
         // generate the pool from configuration
-        let pool = config.create_pool(tls_connector)?;
+        let pool = config.create_pool(None, tls_connector)?;
 
-        #[cfg(feature = "postguard")]
-        {
-            // generate statement guards from the configuration
-            let statement_guard = postguard::Guard::new(
-                configuration.allowed_statements,
-                configuration.allowed_functions,
-            );
-
-            Ok(Self::new(
-                config,
-                pool,
-                configuration.statement_timeout,
-                statement_guard,
-            ))
-        }
-
-        #[cfg(not(feature = "postguard"))]
-        Ok(Self::new(config, pool, configuration.statement_timeout))
+        Ok(Self::new(pool, configuration.statement_timeout))
     }
 }

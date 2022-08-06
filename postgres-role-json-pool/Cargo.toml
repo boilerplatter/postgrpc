@@ -6,19 +6,19 @@ edition = "2021"
 description = "Postgres connection pool that keys off of ROLE and returns JSON"
 
 [dependencies]
-async-trait = "0.1.51"
-bytes = "1.1.0"
-deadpool = "0.8.2"
-deadpool-postgres = "0.9.0"
-futures-core = "0.3.17"
-pin-project-lite = "0.2.7"
-serde_json = "1.0.68"
-thiserror = "1.0.29"
-tracing = "0.1.26"
+async-trait = "0.1.57"
+bytes = "1.2.1"
+deadpool = "0.9.5"
+deadpool-postgres = "0.10.2"
+futures-core = "0.3.21"
+pin-project-lite = "0.2.9"
+serde_json = "1.0.83"
+thiserror = "1.0.32"
+tracing = "0.1.36"
 
 [dependencies.native-tls]
 optional = true
-version = "0.2.8"
+version = "0.2.10"
 
 [dependencies.postgres-native-tls]
 optional = true
@@ -27,17 +27,13 @@ version = "0.5.0"
 [dependencies.postgres-pool]
 path = "../postgres-pool"
 
-[dependencies.postguard]
-optional = true
-path = "../postguard"
-
 [dependencies.serde]
 features = ["derive"]
-version = "1.0.126"
+version = "1.0.142"
 
 [dependencies.tokio-postgres]
 features = ["with-serde_json-1"]
-version = "0.7.2"
+version = "0.7.6"
 
 [features]
 default = []

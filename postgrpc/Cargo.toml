@@ -6,21 +6,24 @@ edition = "2021"
 description = "A JSON-transcoding-ready gRPC server for querying Postgres"
 
 [build-dependencies]
-tonic-build = "0.5.2"
+tonic-build = "0.8.0"
 
 [dependencies]
 envy = "0.4.2"
-futures-util = "0.3.17"
-prost = "0.8.0"
-prost-types = "0.8.0"
-serde_json = "1.0.68"
-thiserror = "1.0.29"
-tokio-stream = "0.1.7"
-tonic-reflection = "0.2.0"
-tracing = "0.1.26"
-tracing-subscriber = "0.2.18"
+futures-util = "0.3.21"
+prost = "0.11.0"
+prost-types = "0.11.1"
+serde_json = "1.0.83"
+thiserror = "1.0.32"
+tokio-stream = "0.1.9"
+tonic-reflection = "0.5.0"
+tracing = "0.1.36"
 tracing-futures = "0.2.5"
-uuid = "0.8.2"
+uuid = "1.1.2"
+
+# TODO:
+# - split postgrpc and postgrpc-lib (i.e. a tower layer)
+# - consolidate most of these workspace items into postgrpc-lib
 
 [dependencies.postgres-pool]
 path = "../postgres-pool"
@@ -38,24 +41,30 @@ path = "../postgres-transaction-pool"
 [dependencies.tokio]
 default-features = false
 features = ["macros", "signal", "rt-multi-thread"]
-version = "1.6.1"
+version = "1.20.1"
 
 [dependencies.tonic]
 default-features = false
 features = ["codegen", "prost", "transport"]
-version = "0.5.2"
+version = "0.8.0"
 
 [dependencies.tower-http]
 default-features = false
 features = ["trace"]
-version = "0.1.1"
+version = "0.3.4"
+
+[dependencies.tracing-subscriber]
+features = ["env-filter"]
+version = "0.3.15"
 
 [features]
-default = ["cors", "transaction", "ssl-native-tls", "role-header"]
-cors = ["postgres-role-json-pool/postguard"]
+default = ["transaction", "ssl-native-tls", "role-header"]
 transaction = ["postgres-transaction-pool", "postgres-services/transaction"]
 ssl-native-tls = ["postgres-role-json-pool/ssl-native-tls"]
 role-header = []
 
 # TODO: features
-# - connection pooling (choose between implementations)
+# - connection pooling (choose between implementations... custom? or deadpool et al?)
+# - channels (enable LISTEN + NOTIFY based channels)
+# - json (enable native JSON transcoding)
+# - lib-features: valuable support
