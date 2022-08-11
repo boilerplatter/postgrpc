@@ -73,6 +73,10 @@ default-features = false
 features = ["codegen", "prost", "transport"]
 version = "0.8.0"
 
+[dependencies.tonic-health]
+optional = true
+version = "0.7.0"
+
 [dependencies.tonic-reflection]
 optional = true
 version = "0.5.0"
@@ -97,7 +101,7 @@ transaction = ["uuid"]
 ssl-native-tls = ["native-tls", "postgres-native-tls"]
 server = ["envy"]
 deadpool = ["deadpool-postgres", "role-header", "pin-project-lite", "serde_json", "num_cpus"]
-health = []
+health = ["tonic-health"]
 reflection = ["tonic-reflection"]
 role-header = [] # FIXME: enable library of useful, composable extensions (or package with pools?)
 

@@ -10,7 +10,7 @@ use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response
 /// Compiled protocol buffers for the Postgres service
 #[allow(unreachable_pub, missing_docs)]
 mod proto {
-    tonic::include_proto!("postgres");
+    tonic::include_proto!("postgres.v1");
 }
 
 /// Protocol-agnostic Postgres handlers for any connection pool

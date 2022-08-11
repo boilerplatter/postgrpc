@@ -11,7 +11,7 @@ use uuid::Uuid;
 /// Compiled protocol buffers for the Transaction service
 #[allow(unreachable_pub, missing_docs)]
 mod proto {
-    tonic::include_proto!("transaction");
+    tonic::include_proto!("transaction.v1");
 }
 
 /// Type alias representing a bubbled-up error from the transaction pool

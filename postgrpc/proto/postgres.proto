@@ -1,5 +1,5 @@
 syntax = "proto3";
-package postgres;
+package postgres.v1;
 
 import "google/protobuf/struct.proto";
 import "google/api/annotations.proto";

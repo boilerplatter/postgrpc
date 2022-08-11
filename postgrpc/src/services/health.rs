@@ -1,21 +1,14 @@
 use crate::pools::{Connection, Pool};
 use futures_util::{pin_mut, stream, StreamExt};
-use proto::{
-    health_check_response::ServingStatus,
-    health_server::{Health as GrpcService, HealthServer},
-};
-pub use proto::{HealthCheckRequest, HealthCheckResponse};
 use std::{hash::Hash, sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Request, Response, Status};
-
-// FIXME: use tonic_health
-
-#[allow(unreachable_pub, missing_docs)]
-mod proto {
-    tonic::include_proto!("health");
-}
+use tonic_health::proto::{
+    health_check_response::ServingStatus,
+    health_server::{Health as GrpcService, HealthServer},
+};
+pub use tonic_health::proto::{HealthCheckRequest, HealthCheckResponse};
 
 /// Health service implementation that checks the connections associated with each service
 pub struct Health<P>

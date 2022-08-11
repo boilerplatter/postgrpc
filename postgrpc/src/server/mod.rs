@@ -1,8 +1,6 @@
 use configuration::Configuration;
 #[cfg(feature = "deadpool")]
 use postgrpc::pools::deadpool;
-#[cfg(not(feature = "deadpool"))]
-use postgrpc::pools::shared;
 use postgrpc::services;
 use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
 use thiserror::Error;
@@ -11,9 +9,6 @@ use tonic::transport::Server;
 
 mod configuration;
 mod logging;
-
-#[cfg(feature = "reflection")]
-pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("routes");
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -94,11 +89,17 @@ pub(crate) async fn run() -> Result<(), Error> {
 
     #[cfg(feature = "reflection")]
     {
-        let reflection = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-            .build()?;
+        let mut reflection = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(postgrpc::FILE_DESCRIPTOR_SET);
 
-        server = server.add_service(reflection);
+        #[cfg(feature = "health")]
+        {
+            reflection = reflection.register_encoded_file_descriptor_set(
+                tonic_health::proto::GRPC_HEALTH_V1_FILE_DESCRIPTOR_SET,
+            );
+        }
+
+        server = server.add_service(reflection.build()?);
     }
 
     #[cfg(feature = "health")]
