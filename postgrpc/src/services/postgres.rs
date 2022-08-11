@@ -1,14 +1,12 @@
 use crate::pools::{Connection, FromRequest, Parameter, Pool};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use proto::{postgres_server::Postgres as GrpcService, QueryRequest};
+use proto::postgres_server::{Postgres as GrpcService, PostgresServer};
+pub use proto::QueryRequest;
 use std::sync::Arc;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 
-use self::proto::postgres_server::PostgresServer;
-
-// FIXME: re-export only those protos that are needed
 /// Compiled protocol buffers for the Postgres service
 #[allow(unreachable_pub, missing_docs)]
 mod proto {

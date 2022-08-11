@@ -1,18 +1,13 @@
 use crate::pools::{transaction, Connection, FromRequest, Parameter, Pool};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use proto::{
-    transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest, RollbackRequest,
-    TransactionQueryRequest,
-};
+use proto::transaction_server::{Transaction as GrpcService, TransactionServer};
+pub use proto::{BeginResponse, CommitRequest, RollbackRequest, TransactionQueryRequest};
 use std::{hash::Hash, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 use uuid::Uuid;
 
-use self::proto::transaction_server::TransactionServer;
-
-// FIXME: re-export only those protos that are needed
 /// Compiled protocol buffers for the Transaction service
 #[allow(unreachable_pub, missing_docs)]
 mod proto {

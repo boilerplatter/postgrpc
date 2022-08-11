@@ -10,6 +10,7 @@ pub mod deadpool;
 pub mod transaction;
 
 // FIXME: update the documentation in this module
+
 /// Newtype wrapper around gRPC values
 #[derive(Debug, Clone)]
 pub struct Parameter(prost_types::Value);
