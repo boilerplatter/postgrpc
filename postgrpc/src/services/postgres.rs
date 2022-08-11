@@ -13,7 +13,6 @@ mod proto {
     tonic::include_proto!("postgres");
 }
 
-// FIXME: should this be private/wrapped in the proto service?
 /// Protocol-agnostic Postgres handlers for any connection pool
 #[derive(Clone)]
 pub struct Postgres<P> {

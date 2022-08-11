@@ -9,9 +9,7 @@ pub mod deadpool;
 #[cfg(feature = "transaction")]
 pub mod transaction;
 
-// FIXME: update the documentation in this module
-
-/// Newtype wrapper around gRPC values
+/// Newtype wrapper around dynamically-typed, JSON-compatible protobuf values
 #[derive(Debug, Clone)]
 pub struct Parameter(prost_types::Value);
 
@@ -58,37 +56,7 @@ impl From<prost_types::Value> for Parameter {
 }
 
 /// gRPC-compatible connection behavior across database connection types. All inputs and outputs
-/// are based on prost well-known-types.
-///
-/// ## Example:
-///
-/// ```
-/// use postgres_pool::Connection;
-/// use tokio_postgres::{Client, RowStream, types::Type};
-///
-/// // a toy client wrapping tokio_postgres's built-in Client
-/// // that uses static strings as parameters (i.e. requiring query-time type hints)
-/// struct MyClient(tokio_postgres::Client);
-///
-/// #[postgres_pool::async_trait]
-/// impl Connection for MyClient {
-///     type Parameter: &'static str;
-///     type RowStream: RowStream;
-///     type Error: tokio_postgres::Error;
-///
-///     async fn query(
-///         &self,
-///         statement: &str,
-///         parameters: &[Self::Parameter],
-///     ) -> Result<Self::RowStream, Self::Error> {
-///         self.0.query_raw(prepared, parameters).await
-///     }
-///
-///     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
-///         self.0.batch_execute(statement).await
-///     }
-/// }
-/// ```
+/// are based on prost well-known-types like `Struct` and `Value`
 #[async_trait]
 pub trait Connection: Send + Sync {
     /// A fallible stream of rows returned from the database as protobuf structs
@@ -114,47 +82,54 @@ pub trait Connection: Send + Sync {
 /// ## Example:
 ///
 /// ```
-/// use postgres_pool::Pool
+/// use postgrpc::pools::{Pool, Connection};
 /// use std::collections::BTreeMap;
 /// use tokio::sync::RwLock;
 /// use uuid::Uuid;
+/// use tonic::Status;
+///
+/// // a simple connection wrapper
+/// // (implementing postgrpc::Connection is an exercise for the reader)
+/// #[derive(Clone)]
+/// struct MyConnection(Arc<tokio_postgres::Client>);
 ///
 /// // a toy pool wrapping a collection of tokio_postgres::Clients
 /// // accessible by unique IDs that are provided by the caller
 /// struct MyPool {
-///     connections: RwLock<BTreeMap<Uuid, Arc<tokio_postgres::Client>>>,
+///     connections: RwLock<BTreeMap<Uuid, MyConnection>>,
 ///     config: tokio_postgres::config::Config
 /// }
 ///
-/// #[postgres_pool::async_trait]
+/// #[postgrpc::async_trait]
 /// impl Pool for MyPool {
 ///     type Key: Uuid;
-///     type Connection: Arc<tokio_postgres::Client>;
-///     type Error: anyhow::Error; // not required, but nice to use
+///     type Connection: MyConnection;
+///     type Error: Status;
 ///
 ///     async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
 ///         // get a connection from the pool or store one for later
 ///         let connections = self.connections.read().await;
 ///
 ///         match connections.get(&key) {
-///             Some(connection) => Ok(Arc::clone(connection)),
+///             Some(connection) => Ok(Arc::clone(connection.0)),
 ///             None => {
 ///                 // drop the previous lock on the connections
 ///                 drop(connections);
 ///
 ///                 // connect to the database using the configuration
-///                 let (connection, raw_connection) = self.config.connect(tokio_postgres::NoTls)?;
+///                 let (client, connection) =
+///                 self.config.connect(tokio_postgres::NoTls).map_error(|error| Status::internal(error.to_string())?;
 ///                 
 ///                 // spawn the raw connection off onto an executor
 ///                 tokio::spawn(async move {
-///                     if let Err(error) = raw_connection.await {
+///                     if let Err(error) = connection.await {
 ///                         eprintln!("connection error: {}", error);
 ///                     }
 ///                 });
 ///
 ///                 // store a reference to the connection for later
-///                 let connection = Arc::new(connection);
-///                 self.connections.write().await.insert(key, Arc::clone(&connection));
+///                 let connection = MyConnection(Arc::new(client));
+///                 self.connections.write().await.insert(key, connection);
 ///
 ///                 // return another reference to the connection for use
 ///                 Ok(connection)

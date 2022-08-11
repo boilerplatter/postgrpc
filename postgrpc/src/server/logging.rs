@@ -54,6 +54,7 @@ impl OnFailure<GrpcFailureClass> for PostgrpcFailure {
 
         match failure {
             GrpcFailureClass::Code(code) => {
+                // TODO: figure out how to include tonic status message data
                 let code = Code::from_i32(code.into());
                 let description = code.description();
 

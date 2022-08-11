@@ -4,7 +4,10 @@
 //! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 //! returning rows as a stream of JSON Objects.
 use super::{Connection, FromRequest, Parameter};
-use deadpool_postgres::tokio_postgres::{error::SqlState, RowStream, Statement};
+use deadpool_postgres::{
+    tokio_postgres::{error::SqlState, RowStream, Statement},
+    ManagerConfig, PoolConfig, SslMode,
+};
 use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
 use serde::{Deserialize, Deserializer};
@@ -39,7 +42,7 @@ pub enum Error {
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(deadpool_postgres::tokio_postgres::Error),
     /// JSON-formatted rows could not be properly converted between Postgres' built-in `to_json()` output and
-    /// `serde_json::Value`. If this error occurs, it is probably a bug in `serde_json` or Postgres itself.
+    /// `serde_json::Value`. If this error occurs, it is because of an AS-induced name collision!
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
 }
@@ -49,11 +52,10 @@ impl From<Error> for Status {
         let message = error.to_string();
 
         match error {
-            Error::Params { .. } | Error::Role(..) | Error::Query(..) => {
+            Error::Params { .. } | Error::Role(..) | Error::Query(..) | Error::InvalidJson => {
                 Status::invalid_argument(message)
             }
             Error::Pool(..) => Status::resource_exhausted(message),
-            Error::InvalidJson => Status::internal(message),
         }
     }
 }
@@ -229,8 +231,8 @@ async fn query_raw(
         // wrap queries that return data in to_json()
         let json_statement = format!(
             "WITH cte AS ({})
-            SELECT TO_JSON(result) AS json
-            FROM (SELECT * FROM cte) AS result",
+            SELECT TO_JSON(__result) AS json
+            FROM (SELECT * FROM cte) AS __result",
             &statement
         );
 
@@ -279,24 +281,35 @@ pub fn interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
 }
 
 /// Deadpool-specific configuration variables
-// FIXME: expose the whole underlying configuration, if possible
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
+    /// maximum size of each connection pool, defaulting to 4x the number of physical CPUs
+    #[serde(default = "get_max_connection_pool_size")]
+    max_connection_pool_size: usize,
     /// maximum amount of time to wait for a statement to complete (in milliseconds)
     #[serde(default, deserialize_with = "from_milliseconds_string")]
-    pub statement_timeout: Option<Duration>,
+    statement_timeout: Option<Duration>,
+    /// connection recycling method to use when connections are returned to the pool
+    #[serde(default)]
+    recycling_method: RecyclingMethod,
     /// Postgres database to connect to
-    pub pgdbname: String,
+    pgdbname: String,
     /// host to use for database connections
     #[serde(default = "get_localhost")]
-    pub pghost: String,
+    pghost: String,
     /// Password to use for database connections
-    pub pgpassword: String,
+    pgpassword: String,
     /// Port to use for database connections
     #[serde(default = "get_postgres_port")]
-    pub pgport: u16,
+    pgport: u16,
     /// User to use for database connections
-    pub pguser: String,
+    pguser: String,
+    /// Application name for Postgres session tracking
+    #[serde(default = "get_application_name")]
+    pgappname: String,
+    /// SSL mode for upstream connections
+    #[serde(default)]
+    pgsslmode: Option<SslMode>,
 }
 
 /// Generate a default "localhost" host value
@@ -307,6 +320,16 @@ fn get_localhost() -> String {
 /// Generate a default port for connecting to the postgres database
 fn get_postgres_port() -> u16 {
     5432
+}
+
+/// Generate a default application name
+fn get_application_name() -> String {
+    "postgrpc".to_string()
+}
+
+/// Generate a default connection pool size
+fn get_max_connection_pool_size() -> usize {
+    num_cpus::get_physical() * 4
 }
 
 /// Deserializer for milliseconds, passed through the environment as a string
@@ -325,6 +348,25 @@ where
     }
 }
 
+#[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RecyclingMethod {
+    Fast,
+    Verified,
+    #[default]
+    Clean,
+}
+
+impl From<RecyclingMethod> for deadpool_postgres::RecyclingMethod {
+    fn from(method: RecyclingMethod) -> Self {
+        match method {
+            RecyclingMethod::Fast => Self::Fast,
+            RecyclingMethod::Verified => Self::Verified,
+            RecyclingMethod::Clean => Self::Clean,
+        }
+    }
+}
+
 /// Pool configuration errors
 #[derive(Debug, Error)]
 pub enum ConfigurationError {
@@ -338,7 +380,6 @@ pub enum ConfigurationError {
 }
 
 /// Derive a default pool from this configuration
-// FIXME: allow for deeper pool configuration for each kind of pool
 impl TryFrom<Configuration> for Pool {
     type Error = ConfigurationError;
 
@@ -351,6 +392,17 @@ impl TryFrom<Configuration> for Pool {
         #[cfg(not(feature = "ssl-native-tls"))]
         let tls_connector = tokio_postgres::NoTls;
 
+        // configure the connection manager
+        let manager = ManagerConfig {
+            recycling_method: configuration.recycling_method.into(),
+        };
+
+        // configure the pool itself
+        let pool = PoolConfig {
+            max_size: configuration.max_connection_pool_size,
+            ..PoolConfig::default()
+        };
+
         // configure the underlying connection pool
         let config = deadpool_postgres::Config {
             dbname: Some(configuration.pgdbname),
@@ -358,6 +410,10 @@ impl TryFrom<Configuration> for Pool {
             password: Some(configuration.pgpassword),
             port: Some(configuration.pgport),
             user: Some(configuration.pguser),
+            application_name: Some(configuration.pgappname),
+            ssl_mode: configuration.pgsslmode,
+            manager: Some(manager),
+            pool: Some(pool),
             ..deadpool_postgres::Config::default()
         };
 
