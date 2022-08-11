@@ -4,7 +4,6 @@
 //! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 //! returning rows as a stream of JSON Objects.
 use super::{Connection, FromRequest, Parameter};
-use async_trait::async_trait;
 use deadpool_postgres::tokio_postgres::{error::SqlState, RowStream, Statement};
 use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
@@ -15,7 +14,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tonic::{Request, Status};
+use tonic::{async_trait, Request, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
 

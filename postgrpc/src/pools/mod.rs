@@ -1,10 +1,10 @@
-use async_trait::async_trait;
 use futures_util::TryStream;
 use prost_types::value::Kind;
 use std::fmt;
 use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
-use tonic::{Request, Status};
+use tonic::{async_trait, Request, Status};
 
+#[cfg(feature = "deadpool")]
 pub mod deadpool;
 #[cfg(feature = "transaction")]
 pub mod transaction;

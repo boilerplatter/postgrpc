@@ -1,8 +1,5 @@
-use std::path::PathBuf;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let file_descriptor = out_dir.join("routes.bin");
+    #[allow(unused_mut)]
     let mut routes = vec!["./proto/postgres.proto"];
 
     #[cfg(feature = "health")]
@@ -10,10 +7,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "transaction")]
     routes.push("./proto/transaction.proto");
 
-    tonic_build::configure()
-        .file_descriptor_set_path(file_descriptor)
-        .build_client(false)
-        .compile(&routes, &["./proto"])?;
+    #[allow(unused_mut)]
+    let mut builder = tonic_build::configure();
+
+    #[cfg(feature = "reflection")]
+    {
+        let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
+        let file_descriptor = out_dir.join("routes.bin");
+        builder = builder.file_descriptor_set_path(file_descriptor)
+    };
+
+    builder.build_client(false).compile(&routes, &["./proto"])?;
 
     Ok(())
 }

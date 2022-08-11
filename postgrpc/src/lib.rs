@@ -10,4 +10,4 @@ pub mod pools;
 pub mod services;
 
 /// Re-export of async_trait macro for implementing Pool traits
-pub use async_trait::async_trait;
+pub use tonic::async_trait;

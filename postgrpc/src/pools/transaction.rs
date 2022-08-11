@@ -2,7 +2,6 @@
 //! inactive transactions at configurable thresholds.
 
 use super::{Connection, Parameter};
-use async_trait::async_trait;
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -11,7 +10,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tonic::Status;
+use tonic::{async_trait, Status};
 use uuid::Uuid;
 
 /// Transaction pool errors

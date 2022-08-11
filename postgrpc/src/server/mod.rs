@@ -12,6 +12,7 @@ use tonic::transport::Server;
 mod configuration;
 mod logging;
 
+#[cfg(feature = "reflection")]
 pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("routes");
 
 #[derive(Error, Debug)]
@@ -32,6 +33,7 @@ pub enum Error {
     #[cfg(not(feature = "deadpool"))]
     #[error(transparent)]
     Config(#[from] shared::ConfigurationError),
+    #[cfg(feature = "reflection")]
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
     #[error("Error setting up SIGTERM handler: {0}")]
@@ -80,11 +82,6 @@ pub(crate) async fn run() -> Result<(), Error> {
 
     let pool = Arc::new(pool);
 
-    // set up the gRPC reflection service
-    let reflection = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-        .build()?;
-
     // set up the server with configured services
     let postgres_service = services::postgres::with_interceptor(Arc::clone(&pool), interceptor);
 
@@ -93,8 +90,16 @@ pub(crate) async fn run() -> Result<(), Error> {
     #[allow(unused_mut)]
     let mut server = Server::builder()
         .layer(logging::create())
-        .add_service(reflection)
         .add_service(postgres_service);
+
+    #[cfg(feature = "reflection")]
+    {
+        let reflection = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+            .build()?;
+
+        server = server.add_service(reflection);
+    }
 
     #[cfg(feature = "health")]
     #[allow(clippy::unnecessary_operation)]

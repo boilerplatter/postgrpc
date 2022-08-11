@@ -1086,7 +1086,6 @@ dependencies = [
 name = "postgrpc"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "bytes",
  "deadpool-postgres",
  "envy",
