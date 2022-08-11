@@ -1,11 +1,21 @@
-use crate::proto::postgres::{postgres_server::Postgres as GrpcService, QueryRequest};
+use crate::pools::{Connection, FromRequest, Parameter, Pool};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use postgrpc::pool::{Connection, FromRequest, Parameter, Pool};
+use proto::{postgres_server::Postgres as GrpcService, QueryRequest};
 use std::sync::Arc;
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 
+use self::proto::postgres_server::PostgresServer;
+
+// FIXME: re-export only those protos that are needed
+/// Compiled protocol buffers for the Postgres service
+#[allow(unreachable_pub, missing_docs)]
+mod proto {
+    tonic::include_proto!("postgres");
+}
+
+// FIXME: should this be private/wrapped in the proto service?
 /// Protocol-agnostic Postgres handlers for any connection pool
 #[derive(Clone)]
 pub struct Postgres<P> {
@@ -17,13 +27,13 @@ where
     P: Pool,
 {
     /// Create a new Postgres service from a reference-counted Pool
-    pub fn new(pool: Arc<P>) -> Self {
+    fn new(pool: Arc<P>) -> Self {
         Self { pool }
     }
 
     /// Query a Postgres database, returning a stream of rows
     #[tracing::instrument(skip(self))]
-    pub async fn query(
+    async fn query(
         &self,
         key: P::Key,
         statement: &str,
@@ -98,4 +108,26 @@ where
 
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
+}
+
+/// Create a new Postgres service from a connection pool
+pub fn new<P>(pool: Arc<P>) -> PostgresServer<Postgres<P>>
+where
+    P: Pool + 'static,
+    P::Key: FromRequest,
+{
+    PostgresServer::new(Postgres::new(pool))
+}
+
+/// Create a new Postgres service from a connection pool and an interceptor
+pub fn with_interceptor<P, I>(
+    pool: Arc<P>,
+    interceptor: I,
+) -> InterceptedService<PostgresServer<Postgres<P>>, I>
+where
+    P: Pool + 'static,
+    P::Key: FromRequest,
+    I: Interceptor,
+{
+    PostgresServer::with_interceptor(Postgres::new(pool), interceptor)
 }

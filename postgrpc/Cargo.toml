@@ -12,14 +12,16 @@ path = "src/lib.rs"
 name = "postgrpc"
 path = "src/main.rs"
 doc = false
-required-features = ["server"]
+required-features = ["server", "deadpool"]
 
 [build-dependencies]
 tonic-build = "0.8.0"
 
 [dependencies]
 async-trait = "0.1.57"
+bytes = "1.2.1"
 futures-util = "0.3.21"
+pin-project-lite = "0.2.9"
 prost = "0.11.0"
 prost-types = "0.11.1"
 serde_json = "1.0.83"
@@ -27,11 +29,6 @@ thiserror = "1.0.32"
 tokio-stream = "0.1.9"
 tonic-reflection = "0.5.0"
 tracing = "0.1.36"
-uuid = "1.1.2"
-
-[dependencies.bytes]
-optional = true
-version = "1.2.1"
 
 [dependencies.deadpool-postgres]
 optional = true
@@ -46,16 +43,11 @@ version = "0.4.2"
 optional = true
 version = "0.2.10"
 
-[dependencies.pin-project-lite]
-optional = true
-version = "0.2.9"
-
 [dependencies.postgres-native-tls]
 optional = true
 version = "0.5.0"
 
 [dependencies.serde]
-optional = true
 features = ["derive"]
 version = "1.0.142"
 
@@ -65,7 +57,6 @@ features = ["macros", "signal", "rt-multi-thread"]
 version = "1.20.1"
 
 [dependencies.tokio-postgres]
-optional = true
 features = ["with-serde_json-1"]
 version = "0.7.6"
 
@@ -83,14 +74,18 @@ version = "0.3.4"
 features = ["env-filter"]
 version = "0.3.15"
 
+[dependencies.uuid]
+optional = true
+features = ["v4"]
+version = "1.1.2"
+
 [features]
-default = ["server", "transaction", "ssl-native-tls", "deadpool", "health"]
-transaction = ["uuid/v4", "to-sql"]
-ssl-native-tls = ["native-tls", "postgres-native-tls", "to-sql"]
-server = ["envy", "serde"]
-deadpool = ["deadpool-postgres", "pin-project-lite", "role-header", "to-sql"]
-to-sql = ["tokio-postgres", "bytes"]
-role-header = [] # FIXME: enable library of useful, composable extensions
+default = ["server", "transaction", "ssl-native-tls", "health", "deadpool"]
+transaction = ["uuid"]
+ssl-native-tls = ["native-tls", "postgres-native-tls"]
+server = ["envy"]
+deadpool = ["deadpool-postgres", "role-header"]
+role-header = [] # FIXME: enable library of useful, composable extensions (or package with pools?)
 health = []
 
 # TODO: features

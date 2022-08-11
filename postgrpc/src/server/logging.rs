@@ -25,10 +25,20 @@ pub struct PostgrpcSpan;
 
 impl<B> MakeSpan<B> for PostgrpcSpan {
     fn make_span(&mut self, request: &HttpRequest<B>) -> tracing::Span {
+        // TODO: add configurable valuable support
+        let headers = request.headers();
+        let uri = request.uri();
+        let user_agent = headers
+            .get("user-agent")
+            .map(|header| header.to_str())
+            .transpose()
+            .unwrap_or_default()
+            .unwrap_or_default();
+
         tracing::info_span!(
             "postgrpc",
-            uri = %request.uri(),
-            headers = ?request.headers()
+            %uri,
+            %user_agent,
         )
     }
 }
@@ -39,26 +49,29 @@ pub struct PostgrpcFailure;
 
 impl OnFailure<GrpcFailureClass> for PostgrpcFailure {
     fn on_failure(&mut self, failure: GrpcFailureClass, latency: Duration, _span: &tracing::Span) {
-        let latency = format!("{} ms", latency.as_millis());
+        // TODO: add latency unit configuration
+        let latency = format!("{}s", latency.as_secs_f32());
 
         match failure {
             GrpcFailureClass::Code(code) => {
-                let readable_code = Code::from_i32(code.into());
+                let code = Code::from_i32(code.into());
+                let description = code.description();
 
-                match readable_code {
+                match code {
                     Code::NotFound
                     | Code::InvalidArgument
                     | Code::PermissionDenied
-                    | Code::Unauthenticated => {
-                        tracing::warn!(code = ?readable_code, latency = %latency)
+                    | Code::Unauthenticated
+                    | Code::Unimplemented => {
+                        tracing::warn!(?code, %description, %latency)
                     }
                     _ => {
-                        tracing::error!(code = ?readable_code, latency = %latency)
+                        tracing::error!(?code, %description, %latency)
                     }
                 }
             }
             GrpcFailureClass::Error(error) => {
-                tracing::error!(error = %error, latency = %latency)
+                tracing::error!(%error, %latency)
             }
         }
     }

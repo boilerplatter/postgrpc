@@ -1,21 +1,28 @@
-use crate::proto::transaction::{
+use crate::pools::{transaction, Connection, FromRequest, Parameter, Pool};
+use futures_util::{pin_mut, StreamExt, TryStreamExt};
+use proto::{
     transaction_server::Transaction as GrpcService, BeginResponse, CommitRequest, RollbackRequest,
     TransactionQueryRequest,
-};
-use futures_util::{pin_mut, StreamExt, TryStreamExt};
-use postgrpc::{
-    pool::{Connection, FromRequest, Parameter, Pool},
-    pools::transaction,
 };
 use std::{hash::Hash, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 use uuid::Uuid;
+
+use self::proto::transaction_server::TransactionServer;
+
+// FIXME: re-export only those protos that are needed
+/// Compiled protocol buffers for the Transaction service
+#[allow(unreachable_pub, missing_docs)]
+mod proto {
+    tonic::include_proto!("transaction");
+}
 
 /// Type alias representing a bubbled-up error from the transaction pool
 pub type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
 
+// FIXME: should this be private/wrapped in the proto service?
 /// Protocol-agnostic Transaction handlers for any connection pool
 #[derive(Clone)]
 pub struct Transaction<P>
@@ -200,4 +207,26 @@ where
 
         Ok(Response::new(()))
     }
+}
+
+/// Create a new Transaction service from a connection pool
+pub fn new<P>(pool: Arc<P>) -> TransactionServer<Transaction<P>>
+where
+    P: Pool + 'static,
+    P::Key: FromRequest + Hash + Eq + Clone,
+{
+    TransactionServer::new(Transaction::new(pool))
+}
+
+/// Create a new Postgres service from a connection pool and an interceptor
+pub fn with_interceptor<P, I>(
+    pool: Arc<P>,
+    interceptor: I,
+) -> InterceptedService<TransactionServer<Transaction<P>>, I>
+where
+    P: Pool + 'static,
+    P::Key: FromRequest + Hash + Eq + Clone,
+    I: Interceptor,
+{
+    TransactionServer::with_interceptor(Transaction::new(pool), interceptor)
 }

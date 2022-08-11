@@ -3,20 +3,21 @@
 //! then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
 //! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 //! returning rows as a stream of JSON Objects.
+use super::{Connection, FromRequest, Parameter};
+use async_trait::async_trait;
+use deadpool_postgres::tokio_postgres::{error::SqlState, RowStream, Statement};
 use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
-use crate::{pool::{Connection, Parameter, FromRequest}, json};
+use serde::{Deserialize, Deserializer};
 use std::{
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 use thiserror::Error;
-use deadpool_postgres::tokio_postgres::{
-    error::SqlState,
-    RowStream, Statement,
-};
 use tonic::{Request, Status};
+#[cfg(feature = "ssl-native-tls")]
+use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
 
 /// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
@@ -71,7 +72,6 @@ impl FromRequest for Role {
             .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
             .role;
 
-
         Ok(role)
     }
 }
@@ -94,8 +94,8 @@ impl Pool {
     }
 }
 
-#[async_trait::async_trait]
-impl crate::pool::Pool for Pool {
+#[async_trait]
+impl super::Pool for Pool {
     type Key = Role;
     type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
@@ -129,7 +129,7 @@ impl crate::pool::Pool for Pool {
 }
 
 pin_project! {
-    /// The stream of JSON-formatted rows returned by this pool's associated connection
+    /// The stream of gRPC-formatted rows returned by this pool's associated connection
     pub struct StructStream {
         #[pin]
         rows: RowStream,
@@ -145,7 +145,7 @@ impl Stream for StructStream {
         match ready!(this.rows.poll_next(context)?) {
             Some(row) => {
                 if let serde_json::Value::Object(map) = row.try_get("json")? {
-                    Poll::Ready(Some(Ok(json::map::to_proto_struct(map))))
+                    Poll::Ready(Some(Ok(to_proto_struct(map))))
                 } else {
                     Poll::Ready(Some(Err(Error::InvalidJson)))
                 }
@@ -166,7 +166,7 @@ pub struct Client {
     client: deadpool_postgres::Client,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl Connection for Client {
     type Error = Error;
     type RowStream = StructStream;
@@ -277,6 +277,129 @@ pub fn interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
     request.extensions_mut().insert(RoleExtension { role });
 
     Ok(request)
+}
+
+/// Deadpool-specific configuration variables
+// FIXME: expose the whole underlying configuration, if possible
+#[derive(Deserialize, Debug)]
+pub struct Configuration {
+    /// maximum amount of time to wait for a statement to complete (in milliseconds)
+    #[serde(default, deserialize_with = "from_milliseconds_string")]
+    pub statement_timeout: Option<Duration>,
+    /// Postgres database to connect to
+    pub pgdbname: String,
+    /// host to use for database connections
+    #[serde(default = "get_localhost")]
+    pub pghost: String,
+    /// Password to use for database connections
+    pub pgpassword: String,
+    /// Port to use for database connections
+    #[serde(default = "get_postgres_port")]
+    pub pgport: u16,
+    /// User to use for database connections
+    pub pguser: String,
+}
+
+/// Generate a default "localhost" host value
+fn get_localhost() -> String {
+    "localhost".to_string()
+}
+
+/// Generate a default port for connecting to the postgres database
+fn get_postgres_port() -> u16 {
+    5432
+}
+
+/// Deserializer for milliseconds, passed through the environment as a string
+fn from_milliseconds_string<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let base_string = String::deserialize(deserializer)?;
+    if base_string.is_empty() {
+        Ok(None)
+    } else {
+        let parsed_millis: u64 = base_string.parse().map_err(serde::de::Error::custom)?;
+        let duration = Duration::from_millis(parsed_millis);
+
+        Ok(Some(duration))
+    }
+}
+
+/// Pool configuration errors
+#[derive(Debug, Error)]
+pub enum ConfigurationError {
+    /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
+    #[error("Error creating the connection pool: {0}")]
+    Create(#[from] deadpool_postgres::CreatePoolError),
+    #[cfg(feature = "ssl-native-tls")]
+    /// TLS errors during setup of SSL connectors
+    #[error("Error setting up TLS connection: {0}")]
+    Tls(#[from] native_tls::Error),
+}
+
+/// Derive a default pool from this configuration
+// FIXME: allow for deeper pool configuration for each kind of pool
+impl TryFrom<Configuration> for Pool {
+    type Error = ConfigurationError;
+
+    fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
+        // set up TLS connectors
+        #[cfg(feature = "ssl-native-tls")]
+        let connector = TlsConnector::builder().build()?;
+        #[cfg(feature = "ssl-native-tls")]
+        let tls_connector = MakeTlsConnector::new(connector);
+        #[cfg(not(feature = "ssl-native-tls"))]
+        let tls_connector = tokio_postgres::NoTls;
+
+        // configure the underlying connection pool
+        let config = deadpool_postgres::Config {
+            dbname: Some(configuration.pgdbname),
+            host: Some(configuration.pghost.to_string()),
+            password: Some(configuration.pgpassword),
+            port: Some(configuration.pgport),
+            user: Some(configuration.pguser),
+            ..deadpool_postgres::Config::default()
+        };
+
+        // generate the pool from configuration
+        let pool = config.create_pool(None, tls_connector)?;
+
+        Ok(Self::new(pool, configuration.statement_timeout))
+    }
+}
+
+/// Convert a serde_json::Value into a prost_types::Value
+fn to_proto_value(json: serde_json::Value) -> prost_types::Value {
+    let kind = match json {
+        serde_json::Value::Null => prost_types::value::Kind::NullValue(0),
+        serde_json::Value::Bool(boolean) => prost_types::value::Kind::BoolValue(boolean),
+        serde_json::Value::Number(number) => match number.as_f64() {
+            Some(number) => prost_types::value::Kind::NumberValue(number),
+            None => prost_types::value::Kind::StringValue(number.to_string()),
+        },
+        serde_json::Value::String(string) => prost_types::value::Kind::StringValue(string),
+        serde_json::Value::Array(array) => {
+            prost_types::value::Kind::ListValue(prost_types::ListValue {
+                values: array.into_iter().map(to_proto_value).collect(),
+            })
+        }
+        serde_json::Value::Object(map) => {
+            prost_types::value::Kind::StructValue(to_proto_struct(map))
+        }
+    };
+
+    prost_types::Value { kind: Some(kind) }
+}
+
+/// Convert a serde_json::Map into a prost_types::Struct
+fn to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: map
+            .into_iter()
+            .map(|(key, value)| (key, to_proto_value(value)))
+            .collect(),
+    }
 }
 
 // TODO: add unit tests

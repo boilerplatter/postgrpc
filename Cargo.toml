@@ -1,10 +1,6 @@
 [workspace]
 
 members = [
-  "postgres-role-json-pool",
-  "postgres-transaction-pool",
-  "postgres-services",
-  "postgres-pool",
   "postgrpc",
   "postguard",
 ]

@@ -1,7 +1,8 @@
 //! A database transaction meta-pool. This pool handles auto-vaccuming of
 //! inactive transactions at configurable thresholds.
 
-use crate::pool::{Connection, Parameter};
+use super::{Connection, Parameter};
+use async_trait::async_trait;
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -102,7 +103,7 @@ where
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl<C> Connection for Transaction<C>
 where
     C: Connection + Send + Sync + 'static,
@@ -159,7 +160,7 @@ pub type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
 /// Pool of active transactions that wraps a lower-level Pool implementation
 pub struct Pool<P>
 where
-    P: crate::pool::Pool,
+    P: super::Pool,
     P::Key: Hash + Eq + Clone,
 {
     pool: Arc<P>,
@@ -168,7 +169,7 @@ where
 
 impl<P> Clone for Pool<P>
 where
-    P: crate::pool::Pool,
+    P: super::Pool,
     P::Key: Hash + Eq + Clone,
 {
     fn clone(&self) -> Self {
@@ -181,7 +182,7 @@ where
 
 impl<P> Pool<P>
 where
-    P: crate::pool::Pool + 'static,
+    P: super::Pool + 'static,
     P::Key: Hash + Eq + Send + Sync + Clone + 'static,
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + 'static,
@@ -335,10 +336,10 @@ where
     }
 }
 
-#[async_trait::async_trait]
-impl<P> crate::pool::Pool for Pool<P>
+#[async_trait]
+impl<P> super::Pool for Pool<P>
 where
-    P: crate::pool::Pool,
+    P: super::Pool,
     P::Key: Hash + Eq + Send + Sync + Clone,
     P::Connection: 'static,
     <P::Connection as Connection>::Error: Send + Sync + Into<Status> + 'static,

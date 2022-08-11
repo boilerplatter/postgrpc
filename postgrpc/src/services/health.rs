@@ -1,14 +1,25 @@
-use crate::proto::health::{
+use crate::pools::{Connection, Pool};
+use futures_util::{pin_mut, stream, StreamExt};
+use proto::{
     health_check_response::ServingStatus, health_server::Health as GrpcService, HealthCheckRequest,
     HealthCheckResponse,
 };
-use futures_util::{pin_mut, stream, StreamExt};
-use postgrpc::pool::{Connection, Pool};
 use std::{hash::Hash, sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Request, Response, Status};
 
+use self::proto::health_server::HealthServer;
+
+// FIXME: use tonic_health
+
+#[allow(unreachable_pub, missing_docs)]
+mod proto {
+    tonic::include_proto!("health");
+}
+
+// FIXME: export the wrapped service instead of this internal impl
+/// Health service implementation that checks the connections associated with each service
 pub struct Health<P>
 where
     P: Pool,
@@ -16,7 +27,7 @@ where
 {
     pool: Arc<P>,
     #[cfg(feature = "transaction")]
-    transactions: postgrpc::pools::transaction::Pool<P>,
+    transactions: crate::pools::transaction::Pool<P>,
 }
 
 impl<P> Clone for Health<P>
@@ -39,10 +50,11 @@ where
     P::Key: Hash + Eq + Default + Clone + Send + Sync,
     <P::Connection as Connection>::Error: Send + Sync,
 {
-    pub fn new(pool: Arc<P>) -> Self {
+    /// Create a new health service from a connection pool
+    fn new(pool: Arc<P>) -> Self {
         Self {
             #[cfg(feature = "transaction")]
-            transactions: postgrpc::pools::transaction::Pool::new(Arc::clone(&pool)),
+            transactions: crate::pools::transaction::Pool::new(Arc::clone(&pool)),
             pool,
         }
     }
@@ -73,7 +85,7 @@ where
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
-        let transaction_key = postgrpc::pools::transaction::Key::new(key.clone(), id);
+        let transaction_key = crate::pools::transaction::Key::new(key.clone(), id);
 
         // attempt to retrieve the active transaction
         let transaction = self
@@ -180,4 +192,13 @@ where
 
         Ok(Response::new(UnboundedReceiverStream::new(receiver)))
     }
+}
+
+/// Create a new Health service from a connection pool
+pub fn new<P>(pool: Arc<P>) -> HealthServer<Health<P>>
+where
+    P: Pool + 'static,
+    P::Key: Hash + Eq + Default + Clone,
+{
+    HealthServer::new(Health::new(pool))
 }
