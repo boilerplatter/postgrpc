@@ -1,8 +1,20 @@
+#[cfg(all(feature = "deadpool", feature = "shared_connection_pool"))]
+compile_error!(
+    "features \"deadpool\" and \"shared_connection_pool\" cannot be enabled at the same time"
+);
+
+#[cfg(not(any(feature = "deadpool", feature = "shared_connection_pool")))]
+compile_error!(
+    "the server feature needs a connection pool! Enable \"deadpool\" or \"shared_connection_pool\""
+);
+
 use configuration::Configuration;
 #[cfg(feature = "deadpool")]
 use postgrpc::pools::deadpool;
+#[cfg(feature = "shared_connection_pool")]
+use postgrpc::pools::shared;
 use postgrpc::services;
-use std::{convert::TryFrom, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::Server;
@@ -19,15 +31,9 @@ pub enum Error {
     #[cfg(feature = "deadpool")]
     #[error(transparent)]
     Pool(#[from] deadpool::Error),
-    #[cfg(not(feature = "deadpool"))]
+    #[cfg(feature = "shared_connection_pool")]
     #[error(transparent)]
     Pool(#[from] shared::Error),
-    #[cfg(feature = "deadpool")]
-    #[error(transparent)]
-    Config(#[from] deadpool::ConfigurationError),
-    #[cfg(not(feature = "deadpool"))]
-    #[error(transparent)]
-    Config(#[from] shared::ConfigurationError),
     #[cfg(feature = "reflection")]
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
@@ -68,10 +74,18 @@ pub(crate) async fn run() -> Result<(), Error> {
     let address = SocketAddr::from(&configuration);
 
     // build a shared connection pool from configuration
+    #[cfg(feature = "shared_connection_pool")]
+    let (pool, interceptor) = {
+        let configuration: shared::Configuration = envy::from_env()?;
+        let pool = configuration.create_pool().await?;
+
+        (pool, |request| Ok(request))
+    };
+
     #[cfg(feature = "deadpool")]
     let (pool, interceptor) = {
         let configuration: deadpool::Configuration = envy::from_env()?;
-        let pool = deadpool::Pool::try_from(configuration)?;
+        let pool = configuration.create_pool()?;
         (pool, deadpool::interceptor)
     };
 
@@ -89,6 +103,7 @@ pub(crate) async fn run() -> Result<(), Error> {
 
     #[cfg(feature = "reflection")]
     {
+        #[allow(unused_mut)]
         let mut reflection = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(postgrpc::FILE_DESCRIPTOR_SET);
 

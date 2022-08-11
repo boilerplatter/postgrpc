@@ -1,8 +1,9 @@
-//! A Postgres connection pool built on `postgres-pool` and `deadpool_postgres` that is meant for
-//! JSON-based querying from remote sources. This pool initiates connections from a single user,
-//! then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
-//! In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
-//! returning rows as a stream of JSON Objects.
+/*!
+A `deadpool_postgres`-based connection pool that initiates connections from a single user,
+then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
+In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
+returning rows as a stream of JSON Objects.
+!*/
 use super::{Connection, FromRequest, Parameter};
 use deadpool_postgres::{
     tokio_postgres::{error::SqlState, RowStream, Statement},
@@ -45,6 +46,13 @@ pub enum Error {
     /// `serde_json::Value`. If this error occurs, it is because of an AS-induced name collision!
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
+    /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
+    #[error("Error creating the connection pool: {0}")]
+    Create(#[from] deadpool_postgres::CreatePoolError),
+    #[cfg(feature = "ssl-native-tls")]
+    /// TLS errors during setup of SSL connectors
+    #[error("Error setting up TLS connection: {0}")]
+    Tls(#[from] native_tls::Error),
 }
 
 impl From<Error> for Status {
@@ -55,7 +63,9 @@ impl From<Error> for Status {
             Error::Params { .. } | Error::Role(..) | Error::Query(..) | Error::InvalidJson => {
                 Status::invalid_argument(message)
             }
-            Error::Pool(..) => Status::resource_exhausted(message),
+            Error::Create(..) | Error::Pool(..) => Status::resource_exhausted(message),
+            #[cfg(feature = "ssl-native-tls")]
+            Error::Tls(..) => Status::internal(message),
         }
     }
 }
@@ -83,16 +93,6 @@ impl FromRequest for Role {
 pub struct Pool {
     pool: deadpool_postgres::Pool,
     statement_timeout: Option<Duration>,
-}
-
-impl Pool {
-    /// Create a new pool from `deadpool_postgres`'s constituent parts
-    pub fn new(pool: deadpool_postgres::Pool, statement_timeout: Option<Duration>) -> Self {
-        Self {
-            pool,
-            statement_timeout,
-        }
-    }
 }
 
 #[async_trait]
@@ -312,6 +312,52 @@ pub struct Configuration {
     pgsslmode: Option<SslMode>,
 }
 
+impl Configuration {
+    /// Create a Pool from this Configuration
+    pub fn create_pool(self) -> Result<Pool, Error> {
+        // set up TLS connectors
+        #[cfg(feature = "ssl-native-tls")]
+        let connector = TlsConnector::builder().build()?;
+        #[cfg(feature = "ssl-native-tls")]
+        let tls_connector = MakeTlsConnector::new(connector);
+        #[cfg(not(feature = "ssl-native-tls"))]
+        let tls_connector = tokio_postgres::NoTls;
+
+        // configure the connection manager
+        let manager = ManagerConfig {
+            recycling_method: self.recycling_method.into(),
+        };
+
+        // configure the pool itself
+        let pool = PoolConfig {
+            max_size: self.max_connection_pool_size,
+            ..PoolConfig::default()
+        };
+
+        // configure the underlying connection pool
+        let config = deadpool_postgres::Config {
+            dbname: Some(self.pgdbname),
+            host: Some(self.pghost.to_string()),
+            password: Some(self.pgpassword),
+            port: Some(self.pgport),
+            user: Some(self.pguser),
+            application_name: Some(self.pgappname),
+            ssl_mode: self.pgsslmode,
+            manager: Some(manager),
+            pool: Some(pool),
+            ..deadpool_postgres::Config::default()
+        };
+
+        // generate the pool from configuration
+        let pool = config.create_pool(None, tls_connector)?;
+
+        Ok(Pool {
+            pool,
+            statement_timeout: self.statement_timeout,
+        })
+    }
+}
+
 /// Generate a default "localhost" host value
 fn get_localhost() -> String {
     "localhost".to_string()
@@ -377,51 +423,6 @@ pub enum ConfigurationError {
     /// TLS errors during setup of SSL connectors
     #[error("Error setting up TLS connection: {0}")]
     Tls(#[from] native_tls::Error),
-}
-
-/// Derive a default pool from this configuration
-impl TryFrom<Configuration> for Pool {
-    type Error = ConfigurationError;
-
-    fn try_from(configuration: Configuration) -> Result<Self, Self::Error> {
-        // set up TLS connectors
-        #[cfg(feature = "ssl-native-tls")]
-        let connector = TlsConnector::builder().build()?;
-        #[cfg(feature = "ssl-native-tls")]
-        let tls_connector = MakeTlsConnector::new(connector);
-        #[cfg(not(feature = "ssl-native-tls"))]
-        let tls_connector = tokio_postgres::NoTls;
-
-        // configure the connection manager
-        let manager = ManagerConfig {
-            recycling_method: configuration.recycling_method.into(),
-        };
-
-        // configure the pool itself
-        let pool = PoolConfig {
-            max_size: configuration.max_connection_pool_size,
-            ..PoolConfig::default()
-        };
-
-        // configure the underlying connection pool
-        let config = deadpool_postgres::Config {
-            dbname: Some(configuration.pgdbname),
-            host: Some(configuration.pghost.to_string()),
-            password: Some(configuration.pgpassword),
-            port: Some(configuration.pgport),
-            user: Some(configuration.pguser),
-            application_name: Some(configuration.pgappname),
-            ssl_mode: configuration.pgsslmode,
-            manager: Some(manager),
-            pool: Some(pool),
-            ..deadpool_postgres::Config::default()
-        };
-
-        // generate the pool from configuration
-        let pool = config.create_pool(None, tls_connector)?;
-
-        Ok(Self::new(pool, configuration.statement_timeout))
-    }
 }
 
 /// Convert a serde_json::Value into a prost_types::Value

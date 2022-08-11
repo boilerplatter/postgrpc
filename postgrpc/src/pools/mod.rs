@@ -6,6 +6,8 @@ use tonic::{async_trait, Request, Status};
 
 #[cfg(feature = "deadpool")]
 pub mod deadpool;
+#[cfg(feature = "shared_connection_pool")]
+pub mod shared;
 #[cfg(feature = "transaction")]
 pub mod transaction;
 
