@@ -5,6 +5,7 @@ then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each c
 In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 returning rows as a stream of JSON Objects.
 !*/
+use arc_swap::ArcSwap;
 use super::{Connection, Parameter};
 use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
@@ -54,7 +55,7 @@ impl From<Error> for Status {
 /// Shared connection "pool" implementation pointing to a single database over a single connection.
 // this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
 pub struct Pool {
-    client: Arc<tokio_postgres::Client>,
+    client: ArcSwap<tokio_postgres::Client>,
     configuration: Configuration,
 }
 
@@ -65,9 +66,19 @@ impl super::Pool for Pool {
     type Error = <Self::Connection as Connection>::Error;
 
     async fn get_connection(&self, _key: ()) -> Result<Self::Connection, Self::Error> {
+        // clean up connection state before handing it off
+        if let Err(error) = self.client.load().batch_execute("DISCARD ALL").await {
+            if error.is_closed() {
+                // recover from closed connections
+                let client = self.configuration.create_client().await?;
+                client.batch_execute("DISCARD ALL").await?;
+                self.client.store(Arc::new(client));
+            }
+        }
+
         // set the statement_timeout for the session
         if let Some(statement_timeout) = self.configuration.statement_timeout {
-            self.client
+            self.client.load()
                 .batch_execute(&format!(
                     "SET statement_timeout={}",
                     statement_timeout.as_millis()
@@ -75,7 +86,7 @@ impl super::Pool for Pool {
                 .await?;
         }
 
-        Ok(self.client.clone())
+        Ok(self.client.load_full())
     }
 }
 
@@ -88,7 +99,7 @@ pin_project! {
 }
 
 impl Stream for StructStream {
-    type Item = Result<prost_types::Struct, Error>;
+    type Item = Result<pbjson_types::Struct, Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -122,9 +133,6 @@ impl Connection for Arc<tokio_postgres::Client> {
         statement: &str,
         parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
-        // clean up connection state before querying
-        self.batch_execute("DISCARD ALL").await?;
-
         // prepare the statement
         let prepared_statement = self.prepare(statement).await?;
 
@@ -196,6 +204,16 @@ pub struct Configuration {
 impl Configuration {
     /// Create a Pool from this Configuration
     pub async fn create_pool(self)  -> Result<Pool, Error> {
+        let client = self.create_client().await.map(ArcSwap::from_pointee)?;
+
+        Ok(Pool {
+            client,
+            configuration: self,
+        })
+    }
+
+    /// Create a Client from this configuration
+    async fn create_client(&self)  -> Result<tokio_postgres::Client, Error> {
         // set up TLS connectors
         #[cfg(feature = "ssl-native-tls")]
         let connector = TlsConnector::builder().build()?;
@@ -219,14 +237,11 @@ impl Configuration {
         // spawn the connection for later
         tokio::spawn(async move {
             if let Err(error) = connection.await {
-                tracing::error!(%error);
+                tracing::warn!(%error);
             }
         });
 
-        Ok(Pool {
-            client: Arc::new(client),
-            configuration: self,
-        })
+        Ok(client)
     }
 }
 
@@ -283,32 +298,33 @@ where
     Ok(ssl_mode)
 }
 
-/// Convert a serde_json::Value into a prost_types::Value
-fn to_proto_value(json: serde_json::Value) -> prost_types::Value {
+// FIXME: share these helpers where it makes sense
+/// Convert a serde_json::Value into a pbjson_types::Value
+fn to_proto_value(json: serde_json::Value) -> pbjson_types::Value {
     let kind = match json {
-        serde_json::Value::Null => prost_types::value::Kind::NullValue(0),
-        serde_json::Value::Bool(boolean) => prost_types::value::Kind::BoolValue(boolean),
+        serde_json::Value::Null => pbjson_types::value::Kind::NullValue(0),
+        serde_json::Value::Bool(boolean) => pbjson_types::value::Kind::BoolValue(boolean),
         serde_json::Value::Number(number) => match number.as_f64() {
-            Some(number) => prost_types::value::Kind::NumberValue(number),
-            None => prost_types::value::Kind::StringValue(number.to_string()),
+            Some(number) => pbjson_types::value::Kind::NumberValue(number),
+            None => pbjson_types::value::Kind::StringValue(number.to_string()),
         },
-        serde_json::Value::String(string) => prost_types::value::Kind::StringValue(string),
+        serde_json::Value::String(string) => pbjson_types::value::Kind::StringValue(string),
         serde_json::Value::Array(array) => {
-            prost_types::value::Kind::ListValue(prost_types::ListValue {
+            pbjson_types::value::Kind::ListValue(pbjson_types::ListValue {
                 values: array.into_iter().map(to_proto_value).collect(),
             })
         }
         serde_json::Value::Object(map) => {
-            prost_types::value::Kind::StructValue(to_proto_struct(map))
+            pbjson_types::value::Kind::StructValue(to_proto_struct(map))
         }
     };
 
-    prost_types::Value { kind: Some(kind) }
+    pbjson_types::Value { kind: Some(kind) }
 }
 
-/// Convert a serde_json::Map into a prost_types::Struct
-fn to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> prost_types::Struct {
-    prost_types::Struct {
+/// Convert a serde_json::Map into a pbjson_types::Struct
+fn to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> pbjson_types::Struct {
+    pbjson_types::Struct {
         fields: map
             .into_iter()
             .map(|(key, value)| (key, to_proto_value(value)))

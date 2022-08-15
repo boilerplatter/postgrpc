@@ -103,7 +103,7 @@ where
     P: Pool + 'static,
     P::Key: FromRequest + Hash + Eq + Clone,
 {
-    type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
+    type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
     #[tracing::instrument(skip(self))]
     async fn query(
@@ -161,7 +161,10 @@ where
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
-    async fn begin(&self, mut request: Request<()>) -> Result<Response<BeginResponse>, Status> {
+    async fn begin(
+        &self,
+        mut request: Request<pbjson_types::Empty>,
+    ) -> Result<Response<BeginResponse>, Status> {
         // derive a key from extensions to use as a connection pool key
         let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
         let id = Transaction::begin(self, key).await?.to_string();
@@ -169,7 +172,10 @@ where
         Ok(Response::new(BeginResponse { id }))
     }
 
-    async fn commit(&self, mut request: Request<CommitRequest>) -> Result<Response<()>, Status> {
+    async fn commit(
+        &self,
+        mut request: Request<CommitRequest>,
+    ) -> Result<Response<pbjson_types::Empty>, Status> {
         // derive a key from extensions to use as a connection pool key
         let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
 
@@ -181,13 +187,13 @@ where
 
         Transaction::commit(self, id, key).await?;
 
-        Ok(Response::new(()))
+        Ok(Response::new(pbjson_types::Empty::default()))
     }
 
     async fn rollback(
         &self,
         mut request: Request<RollbackRequest>,
-    ) -> Result<Response<()>, Status> {
+    ) -> Result<Response<pbjson_types::Empty>, Status> {
         // derive a key from extensions to use as a connection pool key
         let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
 
@@ -199,7 +205,7 @@ where
 
         Transaction::rollback(self, id, key).await?;
 
-        Ok(Response::new(()))
+        Ok(Response::new(pbjson_types::Empty::default()))
     }
 }
 

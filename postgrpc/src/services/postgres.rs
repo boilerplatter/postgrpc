@@ -56,7 +56,7 @@ where
     P: Pool + 'static,
     P::Key: FromRequest,
 {
-    type QueryStream = ReceiverStream<Result<prost_types::Struct, Status>>;
+    type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
     #[tracing::instrument(skip(self))]
     async fn query(
