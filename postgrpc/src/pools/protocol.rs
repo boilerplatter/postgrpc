@@ -2,6 +2,7 @@ use super::Parameter;
 use bytes::{BufMut, BytesMut};
 use num::cast::ToPrimitive;
 use pbjson_types::{value::Kind, ListValue, Struct};
+use postgres_array::Array;
 use tokio_postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type};
 
 /// Binary encoding for Parameters
@@ -94,16 +95,9 @@ fn to_sql_binary(
             }
         }
         Some(Kind::ListValue(ListValue { values })) => match type_.kind() {
-            tokio_postgres::types::Kind::Array(..) => {
-                // FIXME: handle ranges (?) and tuples as list pairs
-                // FIXME: check that this path is taken correctly for binary-encoded arrays
-                // FIXME: handle multi-level ARRAY types (even if just preventing panics!)
-                values
-                    .to_owned()
-                    .into_iter()
-                    .map(Parameter::from)
-                    .collect::<Vec<_>>()
-                    .to_sql(type_, out)
+            // FIXME: handle ranges (?) and tuples as list pairs
+            tokio_postgres::types::Kind::Array(array_type) => {
+                generate_array(array_type, values.to_owned())?.to_sql(type_, out)
             }
             _ => Err(format!(
                 "Cannot encode {} as an array of type {type_}",
@@ -172,36 +166,38 @@ fn to_sql_text(
         Some(Kind::BoolValue(boolean)) => boolean.to_string().to_sql(type_, out),
         Some(Kind::StringValue(text)) => text.to_sql(type_, out),
         Some(Kind::NumberValue(number)) => number.to_string().to_sql(type_, out),
-        Some(Kind::ListValue(ListValue { values })) => match type_.kind() {
-            tokio_postgres::types::Kind::Array(..) => {
-                // text-formatted arrays require manual construction using Postgres syntax
-                let mut values = values.iter().peekable();
-                out.put_slice(b"{");
+        Some(Kind::ListValue(ListValue { values })) => {
+            match type_.kind() {
+                tokio_postgres::types::Kind::Array(..) => {
+                    // text-formatted arrays require manual construction using Postgres syntax
+                    let mut values = values.iter().peekable();
+                    out.put_slice(b"{");
 
-                while let Some(value) = values.next() {
-                    if let Some(Kind::NullValue(..)) | None = value.kind {
-                        // handle "NULL" as a special case
-                        out.put_slice(b"null");
-                    } else {
-                        // use recursive text formatting implementation for everything else
-                        to_sql_text(&value.kind, type_, out)?;
+                    while let Some(value) = values.next() {
+                        if let Some(Kind::NullValue(..)) | None = value.kind {
+                            // handle "NULL" as a special case
+                            out.put_slice(b"null");
+                        } else {
+                            // use recursive text formatting implementation for everything else
+                            to_sql_text(&value.kind, type_, out)?;
+                        }
+
+                        if values.peek().is_some() {
+                            out.put_slice(b",");
+                        }
                     }
 
-                    if values.peek().is_some() {
-                        out.put_slice(b",");
-                    }
+                    out.put_slice(b"}");
+
+                    Ok(IsNull::No)
                 }
-
-                out.put_slice(b"}");
-
-                Ok(IsNull::No)
+                _ => Err(format!(
+                    "Cannot encode {} as type {type_}",
+                    serde_json::to_value(values)?,
+                )
+                .into()),
             }
-            _ => Err(format!(
-                "Cannot encode {} as type {type_}",
-                serde_json::to_value(values)?,
-            )
-            .into()),
-        },
+        }
         Some(Kind::StructValue(Struct { fields })) => match type_.kind() {
             tokio_postgres::types::Kind::Composite(composite_fields) => {
                 // text-formatted composite structs require row shorthand format
@@ -271,8 +267,17 @@ fn should_infer(kind: &Option<Kind>, type_: &Type) -> bool {
         ),
         Some(Kind::ListValue(ListValue { values })) => match type_.kind() {
             // if any list element should be inferred, then they all should be inferred
-            tokio_postgres::types::Kind::Array(type_) => {
-                values.iter().any(|value| should_infer(&value.kind, type_))
+            tokio_postgres::types::Kind::Array(array_type) => {
+                // multi-dimensional Arrays should use the parent type
+                // since the rust_postgres type only goes one level deep
+                let mut values = values.iter().peekable();
+
+                let type_ = match values.peek().map(|value| value.kind.as_ref()).flatten() {
+                    Some(Kind::ListValue(..)) => type_,
+                    _ => array_type,
+                };
+
+                values.any(|value| should_infer(&value.kind, type_))
             }
             // let ToSql handle invalid types
             _ => false,
@@ -289,4 +294,52 @@ fn should_infer(kind: &Option<Kind>, type_: &Type) -> bool {
             _ => false,
         },
     }
+}
+
+/// Recursively generate a potentially-multi-dimensional Array from a set of values
+fn generate_array(
+    array_type: &Type,
+    values: Vec<pbjson_types::Value>,
+) -> Result<Array<Parameter>, Box<dyn std::error::Error + Sync + Send>> {
+    let mut values = values.into_iter().map(|value| value.kind).flatten();
+
+    let array = match values.next() {
+        // handle multi-dimensional ARRAYs
+        Some(Kind::ListValue(ListValue { values: first_row })) => {
+            let dimension = first_row.len();
+            let mut array = generate_array(array_type, first_row)?;
+            array.wrap(0);
+
+            for value in values {
+                match value {
+                    Kind::ListValue(ListValue { values }) if values.len() == dimension => {
+                        let nested_array = generate_array(array_type, values.to_owned())?;
+                        array.push(nested_array);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Cannot encode {} as an element of {array_type}[{dimension}]",
+                            serde_json::to_value(value)?,
+                        )
+                        .into())
+                    }
+                }
+            }
+
+            array
+        }
+        // handle single-dimension ARRAYs
+        Some(value) => Array::from_vec(
+            vec![value]
+                .into_iter()
+                .chain(values)
+                .map(|kind| Parameter::from(pbjson_types::Value { kind: Some(kind) }))
+                .collect::<Vec<_>>(),
+            0,
+        ),
+        // handle empty ARRAYs
+        None => Array::from_vec(vec![], 0),
+    };
+
+    Ok(array)
 }

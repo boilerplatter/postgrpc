@@ -55,6 +55,10 @@ version = "1.13.1"
 optional = true
 version = "0.2.9"
 
+[dependencies.postgres_array]
+path = "/home/alex/Code/OpenSource/rust-postgres-array"
+version = "0.11.0"
+
 [dependencies.postgres-native-tls]
 optional = true
 path = "/home/alex/Code/OpenSource/rust-postgres/postgres-native-tls"

@@ -1247,6 +1247,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgres_array"
+version = "0.11.0"
+dependencies = [
+ "bytes",
+ "fallible-iterator",
+ "postgres-protocol 0.6.4",
+ "postgres-types 0.2.3",
+]
+
+[[package]]
 name = "postgrpc"
 version = "0.1.0"
 dependencies = [
@@ -1263,6 +1273,7 @@ dependencies = [
  "pbjson-types",
  "pin-project-lite",
  "postgres-native-tls",
+ "postgres_array",
  "prost 0.11.0",
  "serde",
  "serde_json",
