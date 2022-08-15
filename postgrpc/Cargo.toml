@@ -28,6 +28,7 @@ tracing = "0.1.36"
 pbjson = "0.4.0"
 pbjson-types = "0.4.0"
 serde_json = "1.0.83"
+num = "0.4.0"
 
 [dependencies.arc-swap]
 optional = true
