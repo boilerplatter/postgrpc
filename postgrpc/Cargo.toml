@@ -31,7 +31,7 @@ tonic-build = "0.8.0"
 
 [dependencies]
 bytes = "1.2.1"
-futures-util = "0.3.21"
+futures-util = "0.3.23"
 prost = "0.11.0"
 thiserror = "1.0.32"
 tokio-stream = "0.1.9"
