@@ -2,7 +2,8 @@ use std::fmt;
 use tonic::{Request, Status};
 
 /// Extension for extracting optional Postgres ROLEs from request headers
-#[cfg(feature = "role-header")]
+#[cfg_attr(doc, doc(cfg(feature = "role-header")))]
+#[cfg(any(doc, feature = "role-header"))]
 pub mod role_header;
 
 /// Helper trait to encapsulate logic for deriving extension values from gRPC requests

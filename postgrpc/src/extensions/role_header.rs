@@ -1,6 +1,7 @@
 use super::FromRequest;
 use tonic::{Request, Status};
 
+// FIXME: make this configurable
 const ROLE_HEADER: &str = "x-postgres-role";
 
 /// Type alias for an optionally-provided Postgres `ROLE` that connection pools can use as a key

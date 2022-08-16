@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unreachable_pub, missing_docs)]
 //!
 //! tonic service implementations for PostgRPC: a gRPC wrapper around Postgres features.
@@ -16,5 +17,6 @@ pub mod extensions;
 pub use tonic::async_trait;
 
 /// Compiled file descriptors for implementing gRPC reflection
-#[cfg(feature = "reflection")]
+#[cfg_attr(doc, doc(cfg(feature = "reflection")))]
+#[cfg(any(doc, feature = "reflection"))]
 pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("routes");

@@ -3,9 +3,20 @@ name = "postgrpc"
 version = "0.1.0"
 authors = ["Alex Pearson <alex@platter.dev>"]
 edition = "2021"
+license = "MIT"
+readme = "README.md"
 description = "A JSON-transcoding-ready gRPC server for querying Postgres"
+keywords = ["grpc", "postgres", "json"]
+
+[badges.maintenance]
+status = "actively-developed"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
+doctest = false
 path = "src/lib.rs"
 
 [[bin]]
@@ -105,12 +116,12 @@ features = ["v4"]
 version = "1.1.2"
 
 [features]
-default = ["server", "transaction", "ssl-native-tls", "health", "shared_connection_pool", "reflection", "role-header"]
+default = ["server", "transaction", "ssl-native-tls", "health", "shared-connection-pool", "reflection", "role-header"]
 transaction = ["uuid"]
 ssl-native-tls = ["native-tls", "postgres-native-tls"]
 server = ["envy"]
 deadpool = ["deadpool-postgres", "pin-project-lite", "num_cpus"]
-shared_connection_pool = ["arc-swap", "pin-project-lite"]
+shared-connection-pool = ["arc-swap", "pin-project-lite"]
 health = ["tonic-health"]
 reflection = ["tonic-reflection"]
 role-header = []

@@ -154,7 +154,7 @@ where
 }
 
 /// Type alias for the internal map of shared transactions
-pub type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
+type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
 
 /// Pool of active transactions that wraps a lower-level Pool implementation
 pub struct Pool<P>
@@ -228,7 +228,7 @@ where
                         .rollback(transaction_key.transaction_id, transaction_key.key)
                         .await
                     {
-                        tracing::error!(error = ?&error, "Error removing stale transaction from cache");
+                        tracing::error!(%error, "Error removing stale transaction from cache");
                     }
                 }
             }
@@ -246,7 +246,7 @@ where
         // generate a unique transaction ID to be included in subsequent requests
         let transaction_id = Uuid::new_v4();
 
-        tracing::info!(transaction = %&transaction_id, "Beginning transaction");
+        tracing::info!(%transaction_id, "Beginning transaction");
 
         let transaction_key = Key {
             key: key.clone(),
@@ -271,7 +271,7 @@ where
             .insert(transaction_key, transaction);
 
         // return the transaction's unique ID for later use
-        tracing::info!(transaction = %&transaction_id, "Transaction succesfully cached");
+        tracing::info!(%transaction_id, "Transaction succesfully cached");
 
         Ok(transaction_id)
     }

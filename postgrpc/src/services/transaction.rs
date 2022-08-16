@@ -18,7 +18,7 @@ mod proto {
 }
 
 /// Type alias representing a bubbled-up error from the transaction pool
-pub type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
+type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
 
 /// Protocol-agnostic Transaction handlers for any connection pool
 #[derive(Clone)]

@@ -1,13 +1,16 @@
 use futures_util::TryStream;
 use std::fmt;
-use tonic::{async_trait, Request, Status};
+use tonic::{async_trait, Status};
 
-#[cfg(feature = "deadpool")]
+#[cfg_attr(doc, doc(cfg(feature = "deadpool")))]
+#[cfg(any(doc, feature = "deadpool"))]
 pub mod deadpool;
 mod protocol;
-#[cfg(feature = "shared_connection_pool")]
+#[cfg_attr(doc, doc(cfg(feature = "shared-connection-pool")))]
+#[cfg(any(doc, feature = "shared-connection-pool"))]
 pub mod shared;
-#[cfg(feature = "transaction")]
+#[cfg_attr(doc, doc(cfg(feature = "transaction")))]
+#[cfg(any(doc, feature = "transaction"))]
 pub mod transaction;
 
 /// Newtype wrapper around dynamically-typed, JSON-compatible protobuf values
@@ -15,7 +18,7 @@ pub mod transaction;
 pub struct Parameter(pbjson_types::Value);
 
 /// gRPC-compatible connection behavior across database connection types. All inputs and outputs
-/// are based on prost well-known-types like `Struct` and `Value`
+/// are based on protobuf's JSON-compatible well-known-types `Struct` and `Value`
 #[async_trait]
 pub trait Connection: Send + Sync {
     /// A fallible stream of rows returned from the database as protobuf structs
@@ -76,9 +79,11 @@ pub trait Connection: Send + Sync {
 ///                 drop(connections);
 ///
 ///                 // connect to the database using the configuration
-///                 let (client, connection) =
-///                 self.config.connect(tokio_postgres::NoTls).map_error(|error| Status::internal(error.to_string())?;
-///                 
+///                 let (client, connection) = self
+///                     .config
+///                     .connect(tokio_postgres::NoTls)
+///                     .map_error(|error| Status::internal(error.to_string()))?;
+///
 ///                 // spawn the raw connection off onto an executor
 ///                 tokio::spawn(async move {
 ///                     if let Err(error) = connection.await {
@@ -115,42 +120,4 @@ pub trait Pool: Send + Sync {
 
     /// Get a single connection from the pool using some key
     async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error>;
-}
-
-/// Helper trait to encapsulate logic for deriving values from gRPC requests
-pub trait FromRequest
-where
-    Self: Sized,
-{
-    /// Errors associated with deriving a value from a gRPC response
-    type Error: std::error::Error + Into<Status>;
-
-    /// Derive a value from a gRPC request
-    fn from_request<T>(request: &mut Request<T>) -> Result<Self, Self::Error>;
-}
-
-/// Dummy error for default impl of derivation of unit structs from requests
-#[derive(Debug)]
-pub struct UnitConversion;
-
-impl fmt::Display for UnitConversion {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{self:?}")
-    }
-}
-
-impl std::error::Error for UnitConversion {}
-
-impl From<UnitConversion> for Status {
-    fn from(_: UnitConversion) -> Self {
-        Self::internal("Infallible unit conversion somehow failed")
-    }
-}
-
-impl FromRequest for () {
-    type Error = UnitConversion;
-
-    fn from_request<T>(_: &mut Request<T>) -> Result<Self, Self::Error> {
-        Ok(())
-    }
 }

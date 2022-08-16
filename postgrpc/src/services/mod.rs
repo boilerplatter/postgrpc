@@ -1,10 +1,12 @@
 /// Health-checking service that validates all of the other configured services
-#[cfg(feature = "health")]
+#[cfg_attr(doc, doc(cfg(feature = "health")))]
+#[cfg(any(doc, feature = "health"))]
 pub mod health;
 
 /// Postgres service that exposes the basic querying interface
 pub mod postgres;
 
 /// Transaction service that enables distributed transactions over a database
-#[cfg(feature = "transaction")]
+#[cfg_attr(doc, doc(cfg(feature = "transaction")))]
+#[cfg(any(doc, feature = "transaction"))]
 pub mod transaction;

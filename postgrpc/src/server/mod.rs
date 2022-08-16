@@ -1,17 +1,17 @@
-#[cfg(all(feature = "deadpool", feature = "shared_connection_pool"))]
+#[cfg(all(feature = "deadpool", feature = "shared-connection-pool"))]
 compile_error!(
-    "features \"deadpool\" and \"shared_connection_pool\" cannot be enabled at the same time"
+    "features \"deadpool\" and \"shared-connection-pool\" cannot be enabled at the same time"
 );
 
-#[cfg(not(any(feature = "deadpool", feature = "shared_connection_pool")))]
+#[cfg(not(any(feature = "deadpool", feature = "shared-connection-pool")))]
 compile_error!(
-    "the server feature needs a connection pool! Enable \"deadpool\" or \"shared_connection_pool\""
+    "the server feature needs a connection pool! Enable \"deadpool\" or \"shared-connection-pool\""
 );
 
 use configuration::Configuration;
 #[cfg(feature = "deadpool")]
 use postgrpc::pools::deadpool;
-#[cfg(feature = "shared_connection_pool")]
+#[cfg(feature = "shared-connection-pool")]
 use postgrpc::pools::shared;
 use postgrpc::services;
 use std::{net::SocketAddr, sync::Arc};
@@ -31,7 +31,7 @@ pub enum Error {
     #[cfg(feature = "deadpool")]
     #[error(transparent)]
     Pool(#[from] deadpool::Error),
-    #[cfg(feature = "shared_connection_pool")]
+    #[cfg(feature = "shared-connection-pool")]
     #[error(transparent)]
     Pool(#[from] shared::Error),
     #[cfg(feature = "reflection")]
@@ -74,7 +74,7 @@ pub(crate) async fn run() -> Result<(), Error> {
     let address = SocketAddr::from(&configuration);
 
     // build a shared connection pool from configuration
-    #[cfg(feature = "shared_connection_pool")]
+    #[cfg(feature = "shared-connection-pool")]
     let pool = envy::from_env::<shared::Configuration>()?
         .create_pool()
         .await
