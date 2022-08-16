@@ -1,13 +1,16 @@
 #![deny(unreachable_pub, missing_docs)]
-/*!
-tonic service implementations for PostgRPC: a gRPC wrapper around Postgres features.
-!*/
+//!
+//! tonic service implementations for PostgRPC: a gRPC wrapper around Postgres features.
+//!
 
 /// Pool implementations and pooling traits for custom connection pools
 pub mod pools;
 
 /// gRPC Service implementations for each feature
 pub mod services;
+
+/// Request extension helpers and interceptors for use in connection pools
+pub mod extensions;
 
 /// Re-export of async_trait macro for implementing Pool traits
 pub use tonic::async_trait;

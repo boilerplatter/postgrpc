@@ -1,4 +1,7 @@
-use crate::pools::{Connection, FromRequest, Parameter, Pool};
+use crate::{
+    extensions::FromRequest,
+    pools::{Connection, Parameter, Pool},
+};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use proto::postgres_server::{Postgres as GrpcService, PostgresServer};
 pub use proto::QueryRequest;

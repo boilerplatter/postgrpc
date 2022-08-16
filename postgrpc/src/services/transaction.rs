@@ -1,4 +1,7 @@
-use crate::pools::{transaction, Connection, FromRequest, Parameter, Pool};
+use crate::{
+    extensions::FromRequest,
+    pools::{transaction, Connection, Parameter, Pool},
+};
 use futures_util::{pin_mut, StreamExt, TryStreamExt};
 use proto::transaction_server::{Transaction as GrpcService, TransactionServer};
 pub use proto::{BeginResponse, CommitRequest, RollbackRequest, TransactionQueryRequest};

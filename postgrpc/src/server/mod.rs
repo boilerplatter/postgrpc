@@ -75,21 +75,20 @@ pub(crate) async fn run() -> Result<(), Error> {
 
     // build a shared connection pool from configuration
     #[cfg(feature = "shared_connection_pool")]
-    let (pool, interceptor) = {
-        let configuration: shared::Configuration = envy::from_env()?;
-        let pool = configuration.create_pool().await?;
-
-        (pool, |request| Ok(request))
-    };
+    let pool = envy::from_env::<shared::Configuration>()?
+        .create_pool()
+        .await
+        .map(Arc::new)?;
 
     #[cfg(feature = "deadpool")]
-    let (pool, interceptor) = {
-        let configuration: deadpool::Configuration = envy::from_env()?;
-        let pool = configuration.create_pool()?;
-        (pool, deadpool::interceptor)
-    };
+    let pool = envy::from_env::<deadpool::Configuration>()?
+        .create_pool()
+        .map(Arc::new)?;
 
-    let pool = Arc::new(pool);
+    #[cfg(feature = "role-header")]
+    let interceptor = postgrpc::extensions::role_header::interceptor;
+    #[cfg(not(feature = "role-header"))]
+    let interceptor = |request| Ok(request);
 
     // set up the server with configured services
     let postgres_service = services::postgres::with_interceptor(Arc::clone(&pool), interceptor);

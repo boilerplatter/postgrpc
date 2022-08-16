@@ -40,6 +40,9 @@ pub enum Error {
     /// `serde_json::Value`. If this error occurs, it is because of an AS-induced name collision!
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
+    /// ROLE-setting errors before connections are returned to users
+    #[error("Unable to set the ROLE of the connection before use: {0}")]
+    Role(tokio_postgres::Error),
     /// Could not establish a secure, SSL connection
     #[cfg(feature = "ssl-native-tls")]
     #[error("Error setting up TLS connection: {0}")]
@@ -61,11 +64,14 @@ pub struct Pool {
 
 #[async_trait]
 impl super::Pool for Pool {
+    #[cfg(feature = "role-header")]
+    type Key = crate::extensions::role_header::Role;
+    #[cfg(not(feature = "role-header"))]
     type Key = ();
     type Connection = Arc<tokio_postgres::Client>;
     type Error = <Self::Connection as Connection>::Error;
 
-    async fn get_connection(&self, _key: ()) -> Result<Self::Connection, Self::Error> {
+    async fn get_connection(&self, _key: Self::Key) -> Result<Self::Connection, Self::Error> {
         // clean up connection state before handing it off
         if let Err(error) = self.client.load().batch_execute("DISCARD ALL").await {
             if error.is_closed() {
@@ -74,6 +80,21 @@ impl super::Pool for Pool {
                 client.batch_execute("DISCARD ALL").await?;
                 self.client.store(Arc::new(client));
             }
+        }
+
+        #[cfg(feature = "role-header")]
+        {
+            // configure the connection's ROLE
+            let local_role_statement = match _key {
+                Some(role) => format!(r#"SET ROLE "{}""#, role),
+                None => "RESET ROLE".to_string(),
+            };
+
+            self.client
+                .load()
+                .batch_execute(&local_role_statement)
+                .await
+                .map_err(Error::Role)?;
         }
 
         // set the statement_timeout for the session

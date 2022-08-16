@@ -4,7 +4,7 @@ then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each c
 In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
 returning rows as a stream of JSON Objects.
 !*/
-use super::{Connection, FromRequest, Parameter};
+use super::{Connection, Parameter};
 use deadpool_postgres::{
     tokio_postgres::{error::SqlState, RowStream, Statement},
     ManagerConfig, PoolConfig, SslMode,
@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tonic::{async_trait, Request, Status};
+use tonic::{async_trait, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
 
@@ -70,23 +70,6 @@ impl From<Error> for Status {
     }
 }
 
-/// Optionally-derived Role key for the default pool
-type Role = Option<String>;
-
-impl FromRequest for Role {
-    type Error = Status;
-
-    fn from_request<T>(request: &mut Request<T>) -> Result<Self, Self::Error> {
-        let role = request
-            .extensions_mut()
-            .remove::<RoleExtension>()
-            .ok_or_else(|| Status::internal("Failed to load extensions before handling request"))?
-            .role;
-
-        Ok(role)
-    }
-}
-
 /// Deadpool-based pool implementation keyed by ROLE pointing to a single database
 // database connections are initiated from a single user and shared through SET LOCAL ROLE
 // this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
@@ -97,23 +80,29 @@ pub struct Pool {
 
 #[async_trait]
 impl super::Pool for Pool {
-    type Key = Role;
+    #[cfg(feature = "role-header")]
+    type Key = crate::extensions::role_header::Role;
+    #[cfg(not(feature = "role-header"))]
+    type Key = ();
     type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
 
-    async fn get_connection(&self, key: Option<String>) -> Result<Self::Connection, Self::Error> {
+    async fn get_connection(&self, _key: Self::Key) -> Result<Self::Connection, Self::Error> {
         let client = self.pool.get().await?;
 
-        // configure the connection's ROLE
-        let local_role_statement = match key {
-            Some(role) => format!(r#"SET ROLE "{}""#, role),
-            None => "RESET ROLE".to_string(),
-        };
+        #[cfg(feature = "role-header")]
+        {
+            // configure the connection's ROLE
+            let local_role_statement = match _key {
+                Some(role) => format!(r#"SET ROLE "{}""#, role),
+                None => "RESET ROLE".to_string(),
+            };
 
-        client
-            .batch_execute(&local_role_statement)
-            .await
-            .map_err(Error::Role)?;
+            client
+                .batch_execute(&local_role_statement)
+                .await
+                .map_err(Error::Role)?;
+        }
 
         // set the statement_timeout for the session
         if let Some(statement_timeout) = self.statement_timeout {
@@ -245,39 +234,6 @@ async fn query_raw(
     };
 
     Ok(rows)
-}
-
-#[cfg(feature = "role-header")]
-const ROLE_HEADER: &str = "x-postgres-role";
-
-/// X-postgres-* headers collected into a single extension
-struct RoleExtension {
-    role: Option<String>,
-}
-
-/// Interceptor function for collecting the extensions needed by the deadpool pool
-pub fn interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
-    // derive the role from metadata
-    #[cfg(feature = "role-header")]
-    let role = request
-        .metadata()
-        .get(ROLE_HEADER)
-        .map(|header| header.to_str())
-        .transpose()
-        .map_err(|error| {
-            let message = format!("Invalid {} header: {}", ROLE_HEADER, error);
-
-            Status::invalid_argument(message)
-        })?
-        .map(String::from);
-
-    #[cfg(not(feature = "role-header"))]
-    let role = None;
-
-    // add the Postgres extension to the request
-    request.extensions_mut().insert(RoleExtension { role });
-
-    Ok(request)
 }
 
 /// Deadpool-specific configuration variables
