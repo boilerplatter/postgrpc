@@ -11,6 +11,7 @@ use std::{
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tonic::{async_trait, Status};
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Transaction pool errors
@@ -110,22 +111,26 @@ where
     type Error = C::Error;
     type RowStream = C::RowStream;
 
-    async fn batch(&self, query: &str) -> Result<(), Self::Error> {
-        self.connection.batch(query).await?;
-        let mut last_used_at = self.last_used_at.write().await;
-        *last_used_at = Instant::now();
-        Ok(())
-    }
-
+    #[tracing::instrument(skip(self, parameters))]
     async fn query(
         &self,
         statement: &str,
         parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
+        tracing::trace!("Querying transaction Connection");
         let rows = self.connection.query(statement, parameters).await?;
         let mut last_used_at = self.last_used_at.write().await;
         *last_used_at = Instant::now();
         Ok(rows)
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+        tracing::trace!("Executing batch query on transaction Connection");
+        self.connection.batch(query).await?;
+        let mut last_used_at = self.last_used_at.write().await;
+        *last_used_at = Instant::now();
+        Ok(())
     }
 }
 
@@ -187,7 +192,10 @@ where
     <P::Connection as Connection>::Error: Send + Sync + 'static,
 {
     /// Initialize a new shared transaction pool
+    #[tracing::instrument(skip(pool))]
     pub fn new(pool: Arc<P>) -> Self {
+        tracing::debug!("Creating transaction pool from connection pool");
+
         let transactions = Arc::new(RwLock::new(HashMap::new()));
 
         let cache = Self {
@@ -201,38 +209,41 @@ where
         let created_at_limit = Duration::from_secs(TRANSACTION_LIFETIME_LIMIT_SECONDS);
 
         // vacuum old and inactive transactions
-        tokio::spawn(async move {
-            loop {
-                // set up polling interval
-                tokio::time::sleep(polling_interval).await;
+        tokio::spawn(
+            async move {
+                loop {
+                    // set up polling interval
+                    tokio::time::sleep(polling_interval).await;
 
-                let now = Instant::now();
+                    let now = Instant::now();
 
-                let mut rollback_queue = vec![];
+                    let mut rollback_queue = vec![];
 
-                // find stale transactions in the cache
-                for (transaction_key, transaction) in transactions.read().await.iter() {
-                    let last_used_at = transaction.last_used_at.read().await;
-                    let is_inactive = (now - *last_used_at) > inactive_limit;
-                    let is_too_old = (now - transaction.created_at) > created_at_limit;
+                    // find stale transactions in the cache
+                    for (transaction_key, transaction) in transactions.read().await.iter() {
+                        let last_used_at = transaction.last_used_at.read().await;
+                        let is_inactive = (now - *last_used_at) > inactive_limit;
+                        let is_too_old = (now - transaction.created_at) > created_at_limit;
 
-                    // queue stale transactions for cleanup
-                    if is_inactive || is_too_old {
-                        rollback_queue.push(transaction_key.clone());
+                        // queue stale transactions for cleanup
+                        if is_inactive || is_too_old {
+                            rollback_queue.push(transaction_key.clone());
+                        }
                     }
-                }
 
-                // clean up stale transactions
-                for transaction_key in rollback_queue.into_iter() {
-                    if let Err(error) = shared_cache
-                        .rollback(transaction_key.transaction_id, transaction_key.key)
-                        .await
-                    {
-                        tracing::error!(%error, "Error removing stale transaction from cache");
+                    // clean up stale transactions
+                    for transaction_key in rollback_queue.into_iter() {
+                        if let Err(error) = shared_cache
+                            .rollback(transaction_key.transaction_id, transaction_key.key)
+                            .await
+                        {
+                            tracing::error!(%error, "Error removing stale transaction from cache");
+                        }
                     }
                 }
             }
-        });
+            .instrument(tracing::info_span!("vacuum")),
+        );
 
         cache
     }
@@ -246,7 +257,7 @@ where
         // generate a unique transaction ID to be included in subsequent requests
         let transaction_id = Uuid::new_v4();
 
-        tracing::info!(%transaction_id, "Beginning transaction");
+        tracing::trace!(%transaction_id, "Beginning transaction");
 
         let transaction_key = Key {
             key: key.clone(),
@@ -271,7 +282,7 @@ where
             .insert(transaction_key, transaction);
 
         // return the transaction's unique ID for later use
-        tracing::info!(%transaction_id, "Transaction succesfully cached");
+        tracing::trace!(%transaction_id, "Transaction successfully cached");
 
         Ok(transaction_id)
     }
@@ -283,7 +294,7 @@ where
         transaction_id: Uuid,
         key: P::Key,
     ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
-        tracing::info!("Committing active transaction");
+        tracing::trace!("Committing active transaction");
 
         self.remove(transaction_id, key)
             .await?
@@ -302,7 +313,7 @@ where
         transaction_id: Uuid,
         key: P::Key,
     ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
-        tracing::info!("Rolling back active transaction");
+        tracing::trace!("Rolling back active transaction");
 
         self.remove(transaction_id, key)
             .await?
@@ -314,12 +325,13 @@ where
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn remove(
         &self,
         transaction_id: Uuid,
         key: P::Key,
     ) -> Result<Transaction<P::Connection>, Error<<P::Connection as Connection>::Error>> {
-        tracing::info!("Removing transaction from the cache");
+        tracing::trace!("Removing transaction from the cache");
 
         let transaction = self
             .transactions
@@ -347,6 +359,13 @@ where
     type Connection = Transaction<P::Connection>;
     type Error = Error<<Self::Connection as Connection>::Error>;
 
+    #[tracing::instrument(
+        skip(self, key),
+        fields(
+            ?key = key.key,
+            %transaction_id = key.transaction_id
+        )
+    )]
     async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
         let transaction = self
             .transactions

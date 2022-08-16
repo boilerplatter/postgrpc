@@ -71,7 +71,10 @@ impl super::Pool for Pool {
     type Connection = Arc<tokio_postgres::Client>;
     type Error = <Self::Connection as Connection>::Error;
 
-    async fn get_connection(&self, _key: Self::Key) -> Result<Self::Connection, Self::Error> {
+    #[tracing::instrument(skip(self))]
+    async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
+        tracing::trace!("Fetching connection from the pool");
+
         // clean up connection state before handing it off
         if let Err(error) = self.client.load().batch_execute("DISCARD ALL").await {
             if error.is_closed() {
@@ -85,7 +88,7 @@ impl super::Pool for Pool {
         #[cfg(feature = "role-header")]
         {
             // configure the connection's ROLE
-            let local_role_statement = match _key {
+            let local_role_statement = match key {
                 Some(role) => format!(r#"SET ROLE "{}""#, role),
                 None => "RESET ROLE".to_string(),
             };
@@ -149,11 +152,14 @@ impl Connection for Arc<tokio_postgres::Client> {
     type Error = Error;
     type RowStream = StructStream;
 
+    #[tracing::instrument(skip(self, parameters))]
     async fn query(
         &self,
         statement: &str,
         parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
+        tracing::trace!("Querying Connection");
+
         // prepare the statement
         let prepared_statement = self.prepare(statement).await?;
 
@@ -189,7 +195,10 @@ impl Connection for Arc<tokio_postgres::Client> {
         Ok(StructStream::from(rows))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+        tracing::trace!("Executing batch query on Connection");
+
         self.batch_execute(query).await?;
 
         Ok(())
@@ -224,7 +233,21 @@ pub struct Configuration {
 
 impl Configuration {
     /// Create a Pool from this Configuration
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            ?statement_timeout = self.statement_timeout,
+            pgdbname = self.pgdbname,
+            pghost = self.pghost,
+            pgpassword = "******",
+            pgport = self.pgport,
+            pgappname = self.pgappname,
+            ?pgsslmode = self.pgsslmode,
+        )
+    )]
     pub async fn create_pool(self)  -> Result<Pool, Error> {
+        tracing::debug!("Creating a shared connection pool from configuration");
+
         let client = self.create_client().await.map(ArcSwap::from_pointee)?;
 
         Ok(Pool {

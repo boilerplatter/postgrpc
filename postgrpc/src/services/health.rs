@@ -42,6 +42,7 @@ where
     <P::Connection as Connection>::Error: Send + Sync,
 {
     /// Create a new health service from a connection pool
+    #[tracing::instrument(skip(pool))]
     fn new(pool: Arc<P>) -> Self {
         Self {
             #[cfg(feature = "transaction")]
@@ -108,11 +109,17 @@ where
     P::Key: Hash + Eq + Default + Clone + Send + Sync,
     <P::Connection as Connection>::Error: Send + Sync,
 {
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(
+        skip(self, request),
+        fields(service = request.get_ref().service),
+        err
+    )]
     async fn check(
         &self,
         request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
+        tracing::debug!("Performing health check");
+
         // use the default value of the given key
         let key = P::Key::default();
 
@@ -141,11 +148,17 @@ where
 
     type WatchStream = UnboundedReceiverStream<Result<HealthCheckResponse, Status>>;
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(
+        skip(self, request),
+        fields(service = request.get_ref().service),
+        err
+    )]
     async fn watch(
         &self,
         request: Request<HealthCheckRequest>,
     ) -> Result<Response<Self::WatchStream>, Status> {
+        tracing::debug!("Streaming health checks");
+
         // set up streamable clones of health check components
         let health_service = self.clone();
         let request = request.into_inner();

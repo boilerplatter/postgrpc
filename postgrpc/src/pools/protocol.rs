@@ -272,7 +272,7 @@ fn should_infer(kind: &Option<Kind>, type_: &Type) -> bool {
                 // since the rust_postgres type only goes one level deep
                 let mut values = values.iter().peekable();
 
-                let type_ = match values.peek().map(|value| value.kind.as_ref()).flatten() {
+                let type_ = match values.peek().and_then(|value| value.kind.as_ref()) {
                     Some(Kind::ListValue(..)) => type_,
                     _ => array_type,
                 };
@@ -301,7 +301,7 @@ fn generate_array(
     array_type: &Type,
     values: Vec<pbjson_types::Value>,
 ) -> Result<Array<Parameter>, Box<dyn std::error::Error + Sync + Send>> {
-    let mut values = values.into_iter().map(|value| value.kind).flatten();
+    let mut values = values.into_iter().flat_map(|value| value.kind);
 
     let array = match values.next() {
         // handle multi-dimensional ARRAYs

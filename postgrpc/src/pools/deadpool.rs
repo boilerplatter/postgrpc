@@ -87,13 +87,16 @@ impl super::Pool for Pool {
     type Connection = Client;
     type Error = <Self::Connection as Connection>::Error;
 
-    async fn get_connection(&self, _key: Self::Key) -> Result<Self::Connection, Self::Error> {
+    #[tracing::instrument(skip(self))]
+    async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
+        tracing::trace!("Fetching connection from the pool");
+
         let client = self.pool.get().await?;
 
         #[cfg(feature = "role-header")]
         {
             // configure the connection's ROLE
-            let local_role_statement = match _key {
+            let local_role_statement = match key {
                 Some(role) => format!(r#"SET ROLE "{}""#, role),
                 None => "RESET ROLE".to_string(),
             };
@@ -161,11 +164,14 @@ impl Connection for Client {
     type Error = Error;
     type RowStream = StructStream;
 
+    #[tracing::instrument(skip(self, parameters))]
     async fn query(
         &self,
         statement: &str,
         parameters: &[Parameter],
     ) -> Result<Self::RowStream, Self::Error> {
+        tracing::trace!("Querying Connection");
+
         // prepare the statement using the statement cache
         let prepared_statement = self.client.prepare_cached(statement).await?;
 
@@ -180,7 +186,7 @@ impl Connection for Client {
         }
 
         let rows = match query_raw(self, statement, &prepared_statement, parameters).await {
-            // retry the query if the schema was poisoned
+            // retry the query if the schema changed underneath the prepared statement cache
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
 
@@ -196,7 +202,10 @@ impl Connection for Client {
         Ok(StructStream::from(rows))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+        tracing::trace!("Executing batch query on Connection");
+
         self.client.batch_execute(query).await?;
 
         Ok(())
@@ -270,12 +279,29 @@ pub struct Configuration {
 
 impl Configuration {
     /// Create a Pool from this Configuration
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            max_connection_pool_size = self.max_connection_pool_size,
+            ?statement_timeout = self.statement_timeout,
+            ?recycling_method = self.recycling_method,
+            pgdbname = self.pgdbname,
+            pghost = self.pghost,
+            pgpassword = "******",
+            pgport = self.pgport,
+            pgappname = self.pgappname,
+            ?pgsslmode = self.pgsslmode,
+        )
+    )]
     pub fn create_pool(self) -> Result<Pool, Error> {
+        tracing::debug!("Creating deadpool-based connection pool from configuration");
+
         // set up TLS connectors
         #[cfg(feature = "ssl-native-tls")]
-        let connector = TlsConnector::builder().build()?;
-        #[cfg(feature = "ssl-native-tls")]
-        let tls_connector = MakeTlsConnector::new(connector);
+        let tls_connector = {
+            let connector = TlsConnector::builder().build()?;
+            MakeTlsConnector::new(connector)
+        };
         #[cfg(not(feature = "ssl-native-tls"))]
         let tls_connector = tokio_postgres::NoTls;
 

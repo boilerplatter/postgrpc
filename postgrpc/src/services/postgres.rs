@@ -32,7 +32,7 @@ where
     }
 
     /// Query a Postgres database, returning a stream of rows
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, parameters), err)]
     async fn query(
         &self,
         key: P::Key,
@@ -61,7 +61,7 @@ where
 {
     type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, request), err)]
     async fn query(
         &self,
         mut request: Request<QueryRequest>,

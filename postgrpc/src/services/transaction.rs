@@ -45,9 +45,9 @@ where
     }
 
     /// Begin a Postgres transaction, returning a unique ID for the transaction
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), err)]
     pub async fn begin(&self, key: P::Key) -> Result<Uuid, Error<P>> {
-        tracing::info!("Beginning transaction");
+        tracing::debug!("Beginning transaction");
 
         let transaction_id = self.pool.begin(key).await?;
 
@@ -55,7 +55,7 @@ where
     }
 
     /// Query an active Postgres transaction by ID and connection pool key
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, parameters), err)]
     pub async fn query(
         &self,
         id: Uuid,
@@ -79,9 +79,9 @@ where
     }
 
     /// Commit an active Postgres transaction by ID and connection pool key
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), err)]
     pub async fn commit(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
-        tracing::info!("Committing transaction");
+        tracing::debug!("Committing transaction");
 
         self.pool.commit(id, key).await?;
 
@@ -89,9 +89,9 @@ where
     }
 
     /// Roll back an active Postgres transaction by ID and connection pool key
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), err)]
     pub async fn rollback(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
-        tracing::info!("Rolling back transaction");
+        tracing::debug!("Rolling back transaction");
 
         self.pool.rollback(id, key).await?;
 
@@ -108,7 +108,7 @@ where
 {
     type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, request), err)]
     async fn query(
         &self,
         mut request: Request<TransactionQueryRequest>,
@@ -164,6 +164,7 @@ where
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
+    #[tracing::instrument(skip(self, request), err)]
     async fn begin(
         &self,
         mut request: Request<pbjson_types::Empty>,
@@ -175,6 +176,7 @@ where
         Ok(Response::new(BeginResponse { id }))
     }
 
+    #[tracing::instrument(skip(self, request), err)]
     async fn commit(
         &self,
         mut request: Request<CommitRequest>,
@@ -193,6 +195,7 @@ where
         Ok(Response::new(pbjson_types::Empty::default()))
     }
 
+    #[tracing::instrument(skip(self, request), err)]
     async fn rollback(
         &self,
         mut request: Request<RollbackRequest>,

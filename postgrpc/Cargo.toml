@@ -116,12 +116,34 @@ features = ["v4"]
 version = "1.1.2"
 
 [features]
-default = ["server", "transaction", "ssl-native-tls", "health", "shared-connection-pool", "reflection", "role-header"]
+default = [
+  "server",
+  "transaction",
+  "ssl-native-tls",
+  "health",
+  "shared-connection-pool",
+  "reflection",
+  "role-header"
+]
+
+deadpool = [
+  "deadpool-postgres",
+  "pin-project-lite",
+  "num_cpus"
+]
+
+shared-connection-pool = [
+  "arc-swap",
+  "pin-project-lite"
+]
+
+ssl-native-tls = [
+  "native-tls",
+  "postgres-native-tls"
+]
+
 transaction = ["uuid"]
-ssl-native-tls = ["native-tls", "postgres-native-tls"]
 server = ["envy"]
-deadpool = ["deadpool-postgres", "pin-project-lite", "num_cpus"]
-shared-connection-pool = ["arc-swap", "pin-project-lite"]
 health = ["tonic-health"]
 reflection = ["tonic-reflection"]
 role-header = []
@@ -129,4 +151,4 @@ role-header = []
 # TODO: features
 # - channels (enable LISTEN + NOTIFY based channels)
 # - json (enable native JSON transcoding)
-# - lib-features: valuable support (and associated deep instrumentation)
+# - server log output configuration (perhaps at runtime?)
