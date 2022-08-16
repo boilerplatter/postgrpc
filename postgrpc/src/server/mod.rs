@@ -1,19 +1,5 @@
-#[cfg(all(feature = "deadpool", feature = "shared-connection-pool"))]
-compile_error!(
-    "features \"deadpool\" and \"shared-connection-pool\" cannot be enabled at the same time"
-);
-
-#[cfg(not(any(feature = "deadpool", feature = "shared-connection-pool")))]
-compile_error!(
-    "the server feature needs a connection pool! Enable \"deadpool\" or \"shared-connection-pool\""
-);
-
 use configuration::Configuration;
-#[cfg(feature = "deadpool")]
-use postgrpc::pools::deadpool;
-#[cfg(feature = "shared-connection-pool")]
-use postgrpc::pools::shared;
-use postgrpc::services;
+use postgrpc::{pools::deadpool, services};
 use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::signal::unix::{signal, SignalKind};
@@ -28,12 +14,8 @@ pub enum Error {
     Environment(#[from] envy::Error),
     #[error("Tracing error: {0}")]
     Logging(#[from] tracing::subscriber::SetGlobalDefaultError),
-    #[cfg(feature = "deadpool")]
     #[error(transparent)]
     Pool(#[from] deadpool::Error),
-    #[cfg(feature = "shared-connection-pool")]
-    #[error(transparent)]
-    Pool(#[from] shared::Error),
     #[cfg(feature = "reflection")]
     #[error("Error configuring gRPC reflection: {0}")]
     Reflection(#[from] tonic_reflection::server::Error),
@@ -74,13 +56,6 @@ pub(crate) async fn run() -> Result<(), Error> {
     let address = SocketAddr::from(&configuration);
 
     // build a shared connection pool from configuration
-    #[cfg(feature = "shared-connection-pool")]
-    let pool = envy::from_env::<shared::Configuration>()?
-        .create_pool()
-        .await
-        .map(Arc::new)?;
-
-    #[cfg(feature = "deadpool")]
     let pool = envy::from_env::<deadpool::Configuration>()?
         .create_pool()
         .map(Arc::new)?;

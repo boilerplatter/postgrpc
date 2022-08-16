@@ -23,7 +23,7 @@ path = "src/lib.rs"
 name = "postgrpc"
 path = "src/main.rs"
 doc = false
-required-features = ["server"]
+required-features = ["server", "deadpool"]
 
 [build-dependencies]
 pbjson-build = "0.4.0"
@@ -40,10 +40,6 @@ pbjson = "0.4.0"
 pbjson-types = "0.4.0"
 serde_json = "1.0.83"
 num = "0.4.0"
-
-[dependencies.arc-swap]
-optional = true
-version = "1.5.1"
 
 [dependencies.deadpool-postgres]
 optional = true
@@ -121,7 +117,7 @@ default = [
   "transaction",
   "ssl-native-tls",
   "health",
-  "shared-connection-pool",
+  "deadpool",
   "reflection",
   "role-header"
 ]
@@ -130,11 +126,6 @@ deadpool = [
   "deadpool-postgres",
   "pin-project-lite",
   "num_cpus"
-]
-
-shared-connection-pool = [
-  "arc-swap",
-  "pin-project-lite"
 ]
 
 ssl-native-tls = [
