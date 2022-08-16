@@ -10,12 +10,60 @@ mod protocol;
 #[cfg(any(doc, feature = "transaction"))]
 pub mod transaction;
 
-/// Newtype wrapper around dynamically-typed, JSON-compatible protobuf values
+/// Newtype wrapper around dynamically-typed, JSON-compatible [`pbjson_types::Value`]s.
+///
+/// This implements [`tokio_postgres::types::ToSql`] as a means of interfacing between the loose types of
+/// JSON and the richer type system encoded in the Postgres protocol.
 #[derive(Debug, Clone)]
 pub struct Parameter(pbjson_types::Value);
 
 /// gRPC-compatible connection behavior across database connection types. All inputs and outputs
-/// are based on protobuf's JSON-compatible well-known-types `Struct` and `Value`
+/// are based on protobuf's JSON-compatible well-known-types [`pbjson_types::Struct`] and
+/// [`pbjson_types::Value`].
+///
+/// #### Example:
+///
+/// ```rust
+/// use postgrpc::pools::{Connection, Parameter};
+/// use tonic::{Row, Status};
+///
+/// // implementing a real StructStream (a fallible stream of Structs)
+/// // is an exercise left to the reader
+/// struct StructStream;
+///
+/// impl From<Vec<Row>> for StructStream {
+///   // also an exercise for the reader
+/// }
+///
+/// #[async_trait]
+/// impl Connection for tokio_postgres::Client {
+///   type Error = Status;
+///   type RowStream = StructStream;
+///
+///   async fn query(
+///     &self,
+///     statement: &str,
+///     parameters: &[Parameter],
+///   ) -> Result<Self::RowStream, Self::Error> {
+///     // Parameter implements ToSql, so can be used directly in query()
+///     let rows: Vec<_> = self
+///       .query(statement, parameters)
+///       .await
+///       .map_error(|error| Status::invalid_argument(error.to_string()))?;
+///
+///     // it's best to stream rows instead of collecting them into a Vec
+///     // but this is only meant to be a quick example
+///      Ok(StructStream::from(rows))
+///   }
+///
+///  #[tracing::instrument(skip(self))]
+///  async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+///    tracing::trace!("Executing batch query on Connection");
+///    self.batch_execute(query).await.map_err(|error| Status::invalid_argument(error.to_string()))
+///    }
+/// }
+/// ```
+
 #[async_trait]
 pub trait Connection: Send + Sync {
     /// A fallible stream of rows returned from the database as protobuf structs
@@ -36,9 +84,15 @@ pub trait Connection: Send + Sync {
     async fn batch(&self, query: &str) -> Result<(), Self::Error>;
 }
 
-/// Connection pool behavior that can be customized across async pool implementations
+/// Connection pool behavior that can be customized across async pool implementations.
 ///
-/// ## Example:
+/// The key difference between a [`Pool`] and most other connection pools is the way new
+/// connections are accessed: by building connection logic around a `Key` that can be derived from
+/// a [`tonic::Request`], all connection isolation and preparation can be handled internally to the
+/// pool. Furthermore, pools don't _have_ to be traditional pools, but can hand out shared access
+/// to a single [`Connection`].
+///
+/// #### Example:
 ///
 /// ```
 /// use postgrpc::pools::{Pool, Connection};

@@ -1,9 +1,8 @@
-/*!
-A `deadpool_postgres`-based connection pool that initiates connections from a single user,
-then uses a Key that maps to a Postgres `ROLE` to `SET LOCAL ROLE` before each connection is used.
-In addition, this pool limits inputs to a scalar `Parameter` subset of valid JSON values,
-returning rows as a stream of JSON Objects.
-!*/
+//! A [`deadpool_postgres`]-based connection pool implementation.
+//!
+//! When used in conjunction with the `role-header` feature and interceptor,
+//! this pool runs `SET ROLE` on each connection for the `ROLE` specified in the
+//! `X-Postgres-Role` header (assuming it exists).
 use super::{Connection, Parameter};
 use deadpool_postgres::{
     tokio_postgres::{error::SqlState, RowStream, Statement},
@@ -25,7 +24,7 @@ use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
 /// Errors related to pooling or running queries against the Postgres database
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Parameters did not match the number of parameters inferred by statement preparation
+    /// Parameters did not match the number of parameters inferred by statement preparation.
     #[error("Expected {expected} parameters but found {actual} instead")]
     Params {
         /// number of expected params
@@ -33,24 +32,24 @@ pub enum Error {
         /// number of actual params in the request after validation
         actual: usize,
     },
-    /// Bubbled-up `deadpool_postgres` connection pool errors
+    /// Bubbled-up [`deadpool_postgres`] connection pool errors.
     #[error("Error fetching connection from the pool: {0}")]
     Pool(#[from] deadpool_postgres::PoolError),
-    /// Bubbled-up `tokio_postgres` SQL-level errors within a connection
+    /// Bubbled-up [`tokio_postgres`] SQL-level errors within a connection.
     #[error("SQL Query error: {0}")]
     Query(#[from] deadpool_postgres::tokio_postgres::Error),
-    /// ROLE-setting errors before connections are returned to users
+    /// ROLE-setting errors before connections are returned to users.
     #[error("Unable to set the ROLE of the connection before use: {0}")]
     Role(deadpool_postgres::tokio_postgres::Error),
     /// JSON-formatted rows could not be properly converted between Postgres' built-in `to_json()` output and
-    /// `serde_json::Value`. If this error occurs, it is because of an AS-induced name collision!
+    /// [`serde_json::Value`]. If this error occurs, it is because of an AS-induced name collision!
     #[error("Unable to aggregate rows from query into valid JSON")]
     InvalidJson,
-    /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
+    /// Bubbled-up configuration errors from the underlying [`deadpool_postgres`] configuration.
     #[error("Error creating the connection pool: {0}")]
     Create(#[from] deadpool_postgres::CreatePoolError),
+    /// TLS errors during setup of [`native_tls`] SSL connectors.
     #[cfg(feature = "ssl-native-tls")]
-    /// TLS errors during setup of SSL connectors
     #[error("Error setting up TLS connection: {0}")]
     Tls(#[from] native_tls::Error),
 }
@@ -70,9 +69,7 @@ impl From<Error> for Status {
     }
 }
 
-/// Deadpool-based pool implementation keyed by ROLE pointing to a single database
-// database connections are initiated from a single user and shared through SET LOCAL ROLE
-// this pool only supports binary encoding, so all non-JSON types must be hinted at in the query
+/// [`deadpool_postgres`]-based `Pool` implementation `Key`ed by Postgres `ROLE`.
 pub struct Pool {
     pool: deadpool_postgres::Pool,
     statement_timeout: Option<Duration>,
@@ -122,7 +119,7 @@ impl super::Pool for Pool {
 }
 
 pin_project! {
-    /// The stream of gRPC-formatted rows returned by this pool's associated connection
+    /// The stream of gRPC-compatible rows returned by this pool's [`Client`].
     pub struct StructStream {
         #[pin]
         rows: RowStream,
@@ -154,7 +151,7 @@ impl From<RowStream> for StructStream {
     }
 }
 
-/// Wrapper around the client provided by deadpool_postgres
+/// `Connection`-implementing wrapper around a [`deadpool_postgres::Client`]
 pub struct Client {
     client: deadpool_postgres::Client,
 }
@@ -245,7 +242,8 @@ async fn query_raw(
     Ok(rows)
 }
 
-/// Deadpool-specific configuration variables
+/// [`deadpool_postgres`]-specific configuration variables, mapped to their [Postgres Environment
+/// Variable equivalents](https://www.postgresql.org/docs/current/libpq-envars.html)
 #[derive(Deserialize, Debug)]
 pub struct Configuration {
     /// maximum size of each connection pool, defaulting to 4x the number of physical CPUs
@@ -393,18 +391,6 @@ impl From<RecyclingMethod> for deadpool_postgres::RecyclingMethod {
             RecyclingMethod::Clean => Self::Clean,
         }
     }
-}
-
-/// Pool configuration errors
-#[derive(Debug, Error)]
-pub enum ConfigurationError {
-    /// Bubbled-up configuration errors from the underlying `deadpool_postgres` configuration
-    #[error("Error creating the connection pool: {0}")]
-    Create(#[from] deadpool_postgres::CreatePoolError),
-    #[cfg(feature = "ssl-native-tls")]
-    /// TLS errors during setup of SSL connectors
-    #[error("Error setting up TLS connection: {0}")]
-    Tls(#[from] native_tls::Error),
 }
 
 /// Convert a serde_json::Value into a pbjson_types::Value

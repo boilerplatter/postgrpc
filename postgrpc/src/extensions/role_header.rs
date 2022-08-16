@@ -26,7 +26,7 @@ struct RoleExtension {
     role: Role,
 }
 
-/// Interceptor function for collecting user roles from request headers
+/// Interceptor function for collecting user `ROLE`s from [`tonic::Request`] headers.
 pub fn interceptor(mut request: Request<()>) -> Result<Request<()>, Status> {
     // derive the role from metadata
     let role = request
