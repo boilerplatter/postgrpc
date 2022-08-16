@@ -37,6 +37,7 @@ version = "1.5.1"
 [dependencies.deadpool-postgres]
 optional = true
 features = ["serde"]
+path = "/home/alex/Code/OpenSource/deadpool/postgres"
 version = "0.10.2"
 
 [dependencies.envy]
@@ -61,8 +62,7 @@ version = "0.11.0"
 
 [dependencies.postgres-native-tls]
 optional = true
-path = "/home/alex/Code/OpenSource/rust-postgres/postgres-native-tls"
-version = "0.5.0"
+git = "https://github.com/sfackler/rust-postgres.git"
 
 [dependencies.serde]
 features = ["derive"]
@@ -75,8 +75,7 @@ version = "1.20.1"
 
 [dependencies.tokio-postgres]
 features = ["with-serde_json-1"]
-path = "/home/alex/Code/OpenSource/rust-postgres/tokio-postgres"
-version = "0.7.6"
+git = "https://github.com/sfackler/rust-postgres.git"
 
 [dependencies.tonic]
 default-features = false
@@ -114,9 +113,9 @@ deadpool = ["deadpool-postgres", "role-header", "pin-project-lite", "num_cpus"]
 shared_connection_pool = ["arc-swap", "pin-project-lite"]
 health = ["tonic-health"]
 reflection = ["tonic-reflection"]
-role-header = [] # FIXME: enable library of useful, composable extensions (or package with pools?)
+role-header = []
 
 # TODO: features
 # - channels (enable LISTEN + NOTIFY based channels)
 # - json (enable native JSON transcoding)
-# - lib-features: valuable support
+# - lib-features: valuable support (and associated deep instrumentation)

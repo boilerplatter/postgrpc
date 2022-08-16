@@ -138,7 +138,7 @@ pin_project! {
 }
 
 impl Stream for StructStream {
-    type Item = Result<prost_types::Struct, Error>;
+    type Item = Result<pbjson_types::Struct, Error>;
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -425,32 +425,32 @@ pub enum ConfigurationError {
     Tls(#[from] native_tls::Error),
 }
 
-/// Convert a serde_json::Value into a prost_types::Value
-fn to_proto_value(json: serde_json::Value) -> prost_types::Value {
+/// Convert a serde_json::Value into a pbjson_types::Value
+fn to_proto_value(json: serde_json::Value) -> pbjson_types::Value {
     let kind = match json {
-        serde_json::Value::Null => prost_types::value::Kind::NullValue(0),
-        serde_json::Value::Bool(boolean) => prost_types::value::Kind::BoolValue(boolean),
+        serde_json::Value::Null => pbjson_types::value::Kind::NullValue(0),
+        serde_json::Value::Bool(boolean) => pbjson_types::value::Kind::BoolValue(boolean),
         serde_json::Value::Number(number) => match number.as_f64() {
-            Some(number) => prost_types::value::Kind::NumberValue(number),
-            None => prost_types::value::Kind::StringValue(number.to_string()),
+            Some(number) => pbjson_types::value::Kind::NumberValue(number),
+            None => pbjson_types::value::Kind::StringValue(number.to_string()),
         },
-        serde_json::Value::String(string) => prost_types::value::Kind::StringValue(string),
+        serde_json::Value::String(string) => pbjson_types::value::Kind::StringValue(string),
         serde_json::Value::Array(array) => {
-            prost_types::value::Kind::ListValue(prost_types::ListValue {
+            pbjson_types::value::Kind::ListValue(pbjson_types::ListValue {
                 values: array.into_iter().map(to_proto_value).collect(),
             })
         }
         serde_json::Value::Object(map) => {
-            prost_types::value::Kind::StructValue(to_proto_struct(map))
+            pbjson_types::value::Kind::StructValue(to_proto_struct(map))
         }
     };
 
-    prost_types::Value { kind: Some(kind) }
+    pbjson_types::Value { kind: Some(kind) }
 }
 
-/// Convert a serde_json::Map into a prost_types::Struct
-fn to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> prost_types::Struct {
-    prost_types::Struct {
+/// Convert a serde_json::Map into a pbjson_types::Struct
+fn to_proto_struct(map: serde_json::Map<String, serde_json::Value>) -> pbjson_types::Struct {
+    pbjson_types::Struct {
         fields: map
             .into_iter()
             .map(|(key, value)| (key, to_proto_value(value)))
