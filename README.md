@@ -1,16 +1,8 @@
 # PostgRPC
+[![Latest Version](https://img.shields.io/crates/v/postgrpc.svg)](https://crates.io/crates/postgrpc)
+[![Documentation](https://docs.rs/postgrpc/badge.svg)](https://docs.rs/postgrpc)
 
 Query your Postgres databases directly using gRPC or transcoded JSON.
-
-## Crates
-
-### `postgrpc` (both `lib` and `bin`)
-(release pending)
-
-### [Postguard](https://github.com/boilerplatter/postgrpc/tree/master/postguard)
-[![Latest Version](https://img.shields.io/crates/v/postguard.svg)](https://crates.io/crates/postguard)
-[![Documentation](https://docs.rs/postguard/badge.svg)](https://docs.rs/postguard)
-
 
 ## Table of Contents
 
@@ -113,3 +105,10 @@ All examples can be run from the `./examples` directory using `docker-compose`. 
 1. **Who built PostgRPC?** The team at [Platter](https://platter.dev).
 2. **Is PostgRPC ready for production?** If you're running this yourself, be sure to run it as a part of a stack that includes robust authentication and authorization, and ensure that you harden your Postgres database against malicious queries! But you were doing that with your Postgres database anyway, right?
 3. **How do you pronounce PostgRPC?** "post-ger-puck"
+
+## Associated Crates
+
+### [Postguard](https://github.com/boilerplatter/postgrpc/tree/master/postguard)
+[![Latest Version](https://img.shields.io/crates/v/postguard.svg)](https://crates.io/crates/postguard)
+[![Documentation](https://docs.rs/postguard/badge.svg)](https://docs.rs/postguard)
+
