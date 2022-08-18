@@ -4,3 +4,12 @@ members = [
   "postgrpc",
   "postguard",
 ]
+
+[patch.crates-io.tokio-postgres]
+path = "postgrpc/vendor/rust-postgres/tokio-postgres"
+
+[patch.crates-io.postgres-types]
+path = "postgrpc/vendor/rust-postgres/postgres-types"
+
+[patch.crates-io.postgres-protocol]
+path = "postgrpc/vendor/rust-postgres/postgres-protocol"
