@@ -6,7 +6,7 @@
 use super::{Connection, Parameter};
 use deadpool_postgres::{
     tokio_postgres::{error::SqlState, RowStream, Statement},
-    ManagerConfig, PoolConfig, SslMode,
+    ManagerConfig, PoolConfig,
 };
 use futures_util::{ready, Stream};
 use pin_project_lite::pin_project;
@@ -322,7 +322,7 @@ impl Configuration {
             port: Some(self.pgport),
             user: Some(self.pguser),
             application_name: Some(self.pgappname),
-            ssl_mode: self.pgsslmode,
+            ssl_mode: self.pgsslmode.map(Into::into),
             manager: Some(manager),
             pool: Some(pool),
             ..deadpool_postgres::Config::default()
@@ -375,7 +375,7 @@ where
 }
 
 #[derive(Deserialize, Debug, Default)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "lowercase")]
 enum RecyclingMethod {
     Fast,
     Verified,
@@ -389,6 +389,24 @@ impl From<RecyclingMethod> for deadpool_postgres::RecyclingMethod {
             RecyclingMethod::Fast => Self::Fast,
             RecyclingMethod::Verified => Self::Verified,
             RecyclingMethod::Clean => Self::Clean,
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+enum SslMode {
+    Disable,
+    Prefer,
+    Require,
+}
+
+impl From<SslMode> for deadpool_postgres::SslMode {
+    fn from(mode: SslMode) -> Self {
+        match mode {
+            SslMode::Disable => Self::Disable,
+            SslMode::Prefer => Self::Prefer,
+            SslMode::Require => Self::Require,
         }
     }
 }

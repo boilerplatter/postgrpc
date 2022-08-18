@@ -55,17 +55,24 @@ For library installations, use `cargo add postgrpc` within a `cargo`-managed Rus
 
 ### Configuration
 
-PostgRPC can be configured with the following environment variables:
+The `postgrpc` executable can be configured with the following environment variables:
 
 - `HOST`: the host that the `postgrpc` service uses. Defaults to `127.0.0.1`.
 - `PORT`: the port that the `postgrpc` service uses. Defaults to `50051`. 
 - `TERMINATION_PERIOD`: the number of milliseconds `postgrpc` waits before shutting down on `SIGTERM` signals. `postgrpc` shuts down gracefully, waiting for requests to finish where possible. This value is useful for waiting for proxies like `envoy` to drain, allowing `postgrpc` to handle those requests without error as long as they take less than `TERMINATION_PERIOD` milliseconds.
+
+In addition, the default connection pool can be configured with the following environment variables:
+
+- `MAX_CONNECTION_POOL_SIZE`: the number of upstream database connections that the pool is allowed to hold onto. Defaults to 4x the number of CPUs available on the host machine.
 - `STATEMENT_TIMEOUT`: the number of milliseconds `postgrpc` waits before aborting queries.
+- `RECYCLING_METHOD`: the [recycling method](https://docs.rs/deadpool-postgres/latest/deadpool_postgres/enum.RecyclingMethod.html) run as connections are returned to the connection pool. Defaults to [`clean`](https://docs.rs/deadpool-postgres/latest/deadpool_postgres/enum.RecyclingMethod.html#variant.Clean).
 - `PGDBNAME` (required): the name of the Postgres database to connect to.
 - `PGHOST`: the host of the Postgres cluster to connect to. Defaults to `localhost`.
 - `PGPASSWORD` (required): the password of the user to use when connecting to the Postgres database.
 - `PGPORT`: the port of the Postgres cluster to connect to. Defaults to `5432`.
-- `PGUSER` (required): the user to use when connecting to the Postgres database
+- `PGUSER` (required): the user to use when connecting to the Postgres database.
+- `PGAPPNAME`: the application label to use when connecting to the Postgres database. Defaults to `postgrpc`.
+- `PGSSLMODE`: the [`sslmode`](https://www.postgresql.org/docs/current/libpq-ssl.html) to use when connecting to the Postgres database. Supported values are `disable`, `prefer`, and `require`.
 
 ### Usage
 
@@ -103,12 +110,22 @@ All examples can be run from the `./examples` directory using `docker-compose`. 
 ## FAQ
 
 1. **Who built PostgRPC?** The team at [Platter](https://platter.dev).
-2. **Is PostgRPC ready for production?** If you're running this yourself, be sure to run it as a part of a stack that includes robust authentication and authorization, and ensure that you harden your Postgres database against malicious queries! But you were doing that with your Postgres database anyway, right?
+2. **Is PostgRPC ready for production?** PostgRPC should be considered alpha-level software, and no warranty is given or implied. If you still want to run PostgRPC yourself, be sure to run it as a part of a stack that includes robust authentication and authorization, and ensure that you harden your Postgres database against malicious queries! But you were doing that with your Postgres database anyway, right?
 3. **How do you pronounce PostgRPC?** "post-ger-puck"
+
+## Contributing
+
+Contributions are welcome in the form of bug reporting, feature requests, software fixes, and documentation updates. Please submit all code contributions as pull requests through GitHub.
+
+## Roadmap
+
+- [] Native JSON transcoding without needing an additional proxy
+- [] [`LISTEN`/`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html)-based channels
+- [] [`MATERIALIZED VIEW`](https://www.postgresql.org/docs/14/rules-materializedviews.html)-based update streams
+- [] Explicit query registration and compile-time gRPC-compatible `proto` generation for an alternative to the dynamic `Query` interfaces
 
 ## Associated Crates
 
 ### [Postguard](https://github.com/boilerplatter/postgrpc/tree/master/postguard)
 [![Latest Version](https://img.shields.io/crates/v/postguard.svg)](https://crates.io/crates/postguard)
 [![Documentation](https://docs.rs/postguard/badge.svg)](https://docs.rs/postguard)
-
