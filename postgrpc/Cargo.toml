@@ -136,6 +136,7 @@ reflection = ["tonic-reflection"]
 role-header = []
 
 # TODO: features
-# - channels (enable LISTEN + NOTIFY based channels)
-# - json (enable native JSON transcoding)
-# - server log output configuration (perhaps at runtime?)
+# - channels (LISTEN + NOTIFY)
+# - watch-able materialized views
+# - server log output runtime configuration
+# - native json transcoding

@@ -1,3 +1,0 @@
-[submodule "postgrpc/vendor/rust-postgres"]
-	path = postgrpc/vendor/rust-postgres
-	url = git@github.com:sfackler/rust-postgres.git
