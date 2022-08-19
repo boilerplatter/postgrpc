@@ -93,8 +93,9 @@ services:
       - HOST=0.0.0.0
       - PGHOST=postgres
       - PGDBNAME=appdb
-      - PGUSER=appuser
+      - PGUSER=appuser # FIXME: do admin work with admin role
       - PGPASSWORD=supersecretpassword
+      - PGAPPNAME=postgrpc_admin
       - RUST_LOG=info
       - TERMINATION_PERIOD=1000
 
@@ -115,8 +116,7 @@ services:
       - RUST_LOG=info
       - STATEMENT_TIMEOUT=500
       - TERMINATION_PERIOD=1000
-      - ALLOWED_FUNCTIONS=
-      - ALLOWED_STATEMENTS=select,insert,update,delete
+      - RECYCLING_METHOD=clean
 
   # postgres database for postgrpc
   postgres:

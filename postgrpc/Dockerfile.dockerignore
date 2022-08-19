@@ -1,5 +1,7 @@
 examples
 benchmarks
 target
+data
 Dockerfile
 Dockerfile.dockerignore
+*.md

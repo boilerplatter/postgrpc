@@ -119,6 +119,7 @@ Contributions are welcome in the form of bug reporting, feature requests, softwa
 
 ## Roadmap
 
+- [] [gRPC-web](https://github.com/grpc/grpc-web) support
 - [] Native JSON transcoding without needing an additional proxy
 - [] [`LISTEN`/`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html)-based channels
 - [] [`MATERIALIZED VIEW`](https://www.postgresql.org/docs/14/rules-materializedviews.html)-based update streams

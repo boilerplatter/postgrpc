@@ -6,13 +6,10 @@ members = [
 ]
 
 [patch.crates-io.tokio-postgres]
-# git = "https://github.com/sfackler/rust-postgres.git"
-path = "/home/alex/Code/OpenSource/rust-postgres/tokio-postgres"
+git = "https://github.com/sfackler/rust-postgres.git"
 
 [patch.crates-io.postgres-types]
-# git = "https://github.com/sfackler/rust-postgres.git"
-path = "/home/alex/Code/OpenSource/rust-postgres/postgres-types"
+git = "https://github.com/sfackler/rust-postgres.git"
 
 [patch.crates-io.postgres-protocol]
-# git = "https://github.com/sfackler/rust-postgres.git"
-path = "/home/alex/Code/OpenSource/rust-postgres/postgres-protocol"
+git = "https://github.com/sfackler/rust-postgres.git"

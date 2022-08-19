@@ -2,6 +2,10 @@
 
 set -e
 
+# FIXME: do admin work with dedicated admin role that isn't a superuser (kratos?)
+# FIXME: make sure that EXECUTE on functions is revoked for appuser
+# FIXME: make sure that the public schema is owned by admin, not appuser
+
 # initialize the privilege-restricted application user
 psql -U postgres -d postgres <<-EOSQL
   -- create scoped and unprivileged database + user combo

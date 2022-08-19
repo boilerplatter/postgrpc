@@ -15,14 +15,14 @@ PostgRPC is built around easy-to-transcode `proto3` [`Value`](https://developers
 
 This example uses [`docker-compose`](https://docs.docker.com/compose/) to spin up an `envoy` proxy in front of `postgrpc` and `postgres` services. From this directory, `docker-compose up` starts the example application.
 
-Once all services have been built, JSON queries can be made against the `query` endpoint exposed on `envoy`'s public port `8080`, e.g.:
+Once all services have been built, JSON queries can be made against the `query` endpoint exposed on `envoy`'s public port `50051`, e.g.:
 
 ```bash
 curl -s \
   -X POST \
   -H 'Content-Type: application/json' \
   -d '{"statement":"select current_user"}' \
-  http://localhost:8080/query | jq
+  http://localhost:50051/query | jq
 
 # [{"current_user": "postgres"}]
 ```
@@ -33,7 +33,7 @@ For comparison, gRPC requests are also handled using the same port. The same req
 grpcurl \
   -plaintext \
   -d '{"statement":"select current_user"}' \
-  [::]:8080 postgres.Postgres/Query | jq
+  [::]:50051 postgres.Postgres/Query | jq
 
 # {"current_user": "postgres"}
 ```
@@ -53,7 +53,15 @@ protoc \
   --include_imports \
   --include_source_info \
   --descriptor_set_out=postgrpc.pb \
-  google/rpc/error_details.proto transaction.proto health.proto postgres.proto
+  google/rpc/error_details.proto transaction.proto postgres.proto
 ```
 
-To limit the services exposed by the proxy as JSON endpoints, omit those service's `.proto` files from the compilation.
+To limit the services exposed by the proxy as JSON endpoints, omit those service's `.proto` files from compilation or from the `services` field in the envoy transcoding filter's configuration in `envoy.yaml`.
+
+### Notes on `envoy` and large query responses
+
+While PostgRPC takes care to stream rows to the user immediately as they are returned from the query, `envoy`'s current transcoding implementation does not. Instead, `envoy` will instead used a [`chunked`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding#directives) `Transfer-Encoding` to return rows as a single JSON Array. This means that consumers need to take care to wait for the entire payload to be delivered instead of attempting to respond to individual rows as they arrive.
+
+A better approach would be to transcode streams to [newline-delimited JSON](https://github.com/grpc-ecosystem/grpc-httpjson-transcoding/issues/38). If you are concerned about processing large query responses in-memory (as the current `envoy` solution requires), then consider using [`grpc-gateway`](https://grpc-ecosystem.github.io/grpc-gateway/) instead.
+
+We'd also welcome any contributions towards proper newline-delimited JSON transcoding support in PostgRPC directly.

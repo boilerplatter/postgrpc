@@ -12,7 +12,7 @@ WORKDIR /app
 # install dependencies
 COPY ./package-lock.json /app/package-lock.json
 COPY ./package.json /app/package.json
-RUN npm install
+RUN npm install --force # FIXME: no forcing!
 RUN npm install -g serve
 
 # bundle the assets

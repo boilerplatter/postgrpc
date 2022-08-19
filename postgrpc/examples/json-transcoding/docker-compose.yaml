@@ -24,7 +24,7 @@ services:
     depends_on:
       - postgrpc
     ports:
-      - "8080:8080"
+      - "50051:8080"
     volumes:
       - ./envoy.yaml:/envoy.yaml
       - ./postgrpc.pb:/proto/postgrpc.pb
