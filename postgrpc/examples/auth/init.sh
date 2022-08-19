@@ -2,27 +2,57 @@
 
 set -e
 
-# FIXME: do admin work with dedicated admin role that isn't a superuser (kratos?)
-# FIXME: make sure that EXECUTE on functions is revoked for appuser
-# FIXME: make sure that the public schema is owned by admin, not appuser
-
 # initialize the privilege-restricted application user
 psql -U postgres -d postgres <<-EOSQL
-  -- create scoped and unprivileged database + user combo
-  CREATE USER appuser WITH PASSWORD 'supersecretpassword' CREATEROLE NOSUPERUSER NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
-  CREATE DATABASE appdb OWNER appuser;
+  -- create non-superuser admin user
+  CREATE USER admin WITH PASSWORD 'supersecretadminpassword' CREATEROLE NOSUPERUSER NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+  -- create app user with even fewer privileges
+  CREATE USER appuser WITH PASSWORD 'supersecretpassword' NOCREATEROLE NOSUPERUSER NOCREATEDB NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+  -- create the application database owned by the admin
+  CREATE DATABASE appdb OWNER admin;
 EOSQL
 
 # initialize limited privileges on the new database
 psql -U postgres -d appdb <<-EOSQL
+  -- make sure that non-superusers can't interact with functions and system tables
+  REVOKE ALL ON SCHEMA pg_catalog FROM PUBLIC;
+  REVOKE ALL ON SCHEMA information_schema FROM PUBLIC;
+  ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
+  -- manually revoke those functions not covered by the previous line
+  DO \$\$
+  DECLARE temp_proc RECORD;
+  BEGIN FOR temp_proc IN
+    SELECT proname, oidvectortypes(proargtypes)
+    FROM pg_proc
+    WHERE proname NOT ILIKE 'to_json%'
+      AND proname NOT ILIKE 'nameeq%'
+      AND proname NOT ILIKE 'uuid_eq%'
+  LOOP
+    BEGIN
+      EXECUTE 'REVOKE EXECUTE ON FUNCTION ' || temp_proc.proname || '(' || temp_proc.oidvectortypes || ') FROM PUBLIC';
+      EXCEPTION WHEN OTHERS THEN
+    END;
+  END LOOP;
+  END \$\$;
+
+  -- grant the app user the functions needed to recycle connections with the default pool
+  GRANT EXECUTE ON FUNCTION pg_advisory_unlock_all() TO appuser;
+
+  -- disallow additional PL/PgSQL
+  DROP EXTENSION plpgsql;
+
   -- revoke everything but USAGE rights from appdb for new users
   REVOKE ALL ON SCHEMA public FROM PUBLIC;
-  ALTER SCHEMA public OWNER TO appuser;
+  ALTER SCHEMA public OWNER TO admin;
   REVOKE CONNECT ON DATABASE appdb FROM PUBLIC;
+  GRANT CONNECT ON DATABASE appdb TO appuser;
 EOSQL
 
-# set up the application database's schema
-PGPASSWORD=supersecretpassword psql -U appuser -d appdb <<-EOSQL
+# set up the application database's schema as the admin
+PGPASSWORD=supersecretadminpassword psql -U admin -d appdb <<-EOSQL
   -- enable relevant extensions
   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 

@@ -80,7 +80,7 @@ export const useNotes = (identity) => {
     const statement = `
       UPDATE notes
       SET note = $2
-      WHERE id = $1::text::uuid
+      WHERE id = $1
       RETURNING id, note, created_at
     `
     const values = [id, note]
@@ -102,7 +102,7 @@ export const useNotes = (identity) => {
   const deleteNote = async (id) => {
     const statement = `
       DELETE FROM notes
-      WHERE id = $1::text::uuid
+      WHERE id = $1
     `
     const values = [id]
     const response = await query(statement, values)

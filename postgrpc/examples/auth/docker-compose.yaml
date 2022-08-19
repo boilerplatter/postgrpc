@@ -93,8 +93,8 @@ services:
       - HOST=0.0.0.0
       - PGHOST=postgres
       - PGDBNAME=appdb
-      - PGUSER=appuser # FIXME: do admin work with admin role
-      - PGPASSWORD=supersecretpassword
+      - PGUSER=admin
+      - PGPASSWORD=supersecretadminpassword
       - PGAPPNAME=postgrpc_admin
       - RUST_LOG=info
       - TERMINATION_PERIOD=1000
