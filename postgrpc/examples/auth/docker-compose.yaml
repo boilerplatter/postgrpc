@@ -3,7 +3,7 @@ version: "3.9"
 services:
   # database migrations for kratos
   kratos-migrate:
-    image: oryd/kratos:v0.7.4-alpha.1-sqlite
+    image: oryd/kratos:v0.10.1
     environment:
       - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true&mode=rwc
     volumes:
@@ -21,7 +21,7 @@ services:
     depends_on:
       - kratos-migrate
       - envoy
-    image: oryd/kratos:v0.7.4-alpha.1-sqlite
+    image: oryd/kratos:v0.10.1
     ports:
       - 4433:4433
     environment:
@@ -39,7 +39,7 @@ services:
 
   # ory oathkeeper API gateway
   oathkeeper:
-    image: oryd/oathkeeper:v0.38
+    image: oryd/oathkeeper:v0.39.3
     depends_on:
       - kratos
       - envoy
@@ -52,7 +52,7 @@ services:
 
   # envoy proxy
   envoy:
-    image: envoyproxy/envoy:v1.20.0
+    image: envoyproxy/envoy:v1.22.5
     command: envoy -c /envoy.yaml
     depends_on:
       - ratelimit

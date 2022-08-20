@@ -39,6 +39,7 @@ psql -U postgres -d appdb <<-EOSQL
   END \$\$;
 
   -- grant the app user the functions needed to recycle connections with the default pool
+  GRANT EXECUTE ON FUNCTION pg_advisory_unlock_all() TO admin;
   GRANT EXECUTE ON FUNCTION pg_advisory_unlock_all() TO appuser;
 
   -- disallow additional PL/PgSQL

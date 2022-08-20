@@ -19,7 +19,7 @@ services:
     environment:
       - POSTGRES_PASSWORD=supersecretpassword
   envoy:
-    image: envoyproxy/envoy:v1.20.0
+    image: envoyproxy/envoy:v1.22.5
     command: envoy -c /envoy.yaml
     depends_on:
       - postgrpc

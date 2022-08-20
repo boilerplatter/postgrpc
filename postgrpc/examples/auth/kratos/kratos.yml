@@ -27,8 +27,6 @@ serve:
 
 selfservice:
   default_browser_return_url: http://127.0.0.1:4455/
-  whitelisted_return_urls:
-    - http://127.0.0.1:4455
 
   methods:
     password:
@@ -56,7 +54,6 @@ selfservice:
       after:
         password:
           hooks:
-            - hook: session
             - hook: web_hook
               config:
                 url: http://envoy:8081/query
@@ -77,6 +74,7 @@ selfservice:
                 url: http://envoy:8081/query
                 method: POST
                 body: file:///etc/config/kratos/grant_ops.jsonnet
+            - hook: session
 
 log:
   level: debug
@@ -96,7 +94,11 @@ hashers:
     key_length: 16
 
 identity:
-  default_schema_url: file:///etc/config/kratos/identity.schema.json
+  schemas:
+    - id: user
+      url: file:///etc/config/kratos/identity.schema.json
+
+  default_schema_id: user
 
 courier:
   smtp:

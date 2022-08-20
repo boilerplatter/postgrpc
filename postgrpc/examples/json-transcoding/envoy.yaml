@@ -34,6 +34,8 @@ static_resources:
                   expose_headers: grpc-status,grpc-message
             http_filters:
               - name: envoy.filters.http.cors
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
               - name: envoy.filters.http.grpc_json_transcoder
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder
@@ -49,6 +51,8 @@ static_resources:
                     always_print_enums_as_ints: false
                     preserve_proto_field_names: false
               - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
     - name: postgrpc
       connect_timeout: 0.25s

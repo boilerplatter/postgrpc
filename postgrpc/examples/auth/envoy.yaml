@@ -55,6 +55,8 @@ static_resources:
                     always_print_enums_as_ints: false
                     preserve_proto_field_names: false
               - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
     - name: listener_1
       address:
         socket_address:
@@ -95,6 +97,8 @@ static_resources:
                     always_print_enums_as_ints: false
                     preserve_proto_field_names: false
               - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
     - name: postgrpc
       connect_timeout: 0.25s
