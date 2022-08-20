@@ -4,9 +4,10 @@ version = "0.1.0"
 authors = ["Alex Pearson <alex@platter.dev>"]
 edition = "2021"
 license = "MIT"
-readme = "README.md"
 description = "A JSON-transcoding-ready gRPC server for querying Postgres"
 keywords = ["grpc", "postgres", "json"]
+homepage = "https://github.com/boilerplatter/postgrpc"
+repository = "https://github.com/boilerplatter/postgrpc"
 
 [badges.maintenance]
 status = "actively-developed"
