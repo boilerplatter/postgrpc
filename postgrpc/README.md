@@ -106,6 +106,7 @@ grpcurl \
 All examples can be run from the `./examples` directory using `docker-compose`. Click on the links below to learn more about each example.
 
 - [JSON Transcoding](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/json-transcoding)
+- [gRPC-web](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/grpc-web)
 - [Load Balancing](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/load-balancing)
 - [Auth](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/auth)
 
