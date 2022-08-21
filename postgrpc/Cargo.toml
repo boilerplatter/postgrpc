@@ -1,11 +1,11 @@
 [package]
 name = "postgrpc"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Alex Pearson <alex@platter.dev>"]
 edition = "2021"
 license = "MIT"
-description = "A JSON-transcoding-ready gRPC server for querying Postgres"
-keywords = ["grpc", "postgres", "json"]
+description = "A JSON-transcoding-ready gRPC server for querying Postgres databases"
+keywords = ["postgres", "json", "grpc", "grpc-web"]
 homepage = "https://github.com/boilerplatter/postgrpc"
 repository = "https://github.com/boilerplatter/postgrpc"
 readme = "README.md"
@@ -147,4 +147,3 @@ role-header = []
 # - watch-able materialized views
 # - server log output runtime configuration
 # - native json transcoding
-# - gRPC web support
