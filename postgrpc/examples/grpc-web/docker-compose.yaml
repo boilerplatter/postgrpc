@@ -1,0 +1,37 @@
+version: "3.9" 
+services:
+  postgrpc:
+    build:
+      context: ../../../
+      dockerfile: postgrpc/Dockerfile
+    ports:
+      - 50051:50051
+    depends_on:
+      - postgres
+    environment:
+      - HOST=0.0.0.0
+      - PGHOST=postgres
+      - PGDBNAME=postgres
+      - PGUSER=postgres
+      - PGPASSWORD=supersecretpassword
+      - RUST_LOG=info
+      - TERMINATION_PERIOD=1000
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=supersecretpassword
+    volumes:
+      - ./init.sh:/docker-entrypoint-initdb.d/init.sh
+  app:
+    build:
+      context: ../../
+      dockerfile: examples/grpc-web/app/Dockerfile
+      args:
+        - POSTGRPC_URL=http://127.0.0.1:50051
+    ports:
+      - 8080:8080
+    depends_on:
+      - postgrpc
+    environment:
+      - PORT=8080
+  # TODO: pre-compile the clients (and document how to do so with protoc)

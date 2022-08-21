@@ -71,9 +71,23 @@ pub(crate) async fn run() -> Result<(), Error> {
     tracing::info!(%address, "PostgRPC service starting");
 
     #[allow(unused_mut)]
-    let mut server = Server::builder()
-        .layer(logging::create())
-        .add_service(postgres_service);
+    let mut server = Server::builder();
+
+    #[cfg(feature = "web")]
+    {
+        server = server.accept_http1(true);
+    }
+
+    let mut router = server.layer(logging::create()).add_service({
+        #[cfg(feature = "web")]
+        {
+            tonic_web::enable(postgres_service)
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            postgres_service
+        }
+    });
 
     #[cfg(feature = "reflection")]
     {
@@ -88,22 +102,42 @@ pub(crate) async fn run() -> Result<(), Error> {
             );
         }
 
-        server = server.add_service(reflection.build()?);
+        router = router.add_service(reflection.build()?);
     }
 
     #[cfg(feature = "health")]
     #[allow(clippy::unnecessary_operation)]
     {
-        server = server.add_service(services::health::new(Arc::clone(&pool)))
+        let health_service = services::health::new(Arc::clone(&pool));
+        router = router.add_service({
+            #[cfg(feature = "web")]
+            {
+                tonic_web::enable(health_service)
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                health_service
+            }
+        })
     };
 
     #[cfg(feature = "transaction")]
     #[allow(clippy::unnecessary_operation)]
     {
-        server = server.add_service(services::transaction::with_interceptor(pool, interceptor));
+        let transaction_service = services::transaction::with_interceptor(pool, interceptor);
+        router = router.add_service({
+            #[cfg(feature = "web")]
+            {
+                tonic_web::enable(transaction_service)
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                transaction_service
+            }
+        });
     }
 
-    server.serve_with_shutdown(address, shutdown).await?;
+    router.serve_with_shutdown(address, shutdown).await?;
 
     tracing::info!(%address, "PostgRPC service stopped");
 

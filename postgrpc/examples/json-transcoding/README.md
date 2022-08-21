@@ -65,3 +65,7 @@ While PostgRPC takes care to stream rows to the user immediately as they are ret
 A better approach would be to transcode streams to [newline-delimited JSON](https://github.com/grpc-ecosystem/grpc-httpjson-transcoding/issues/38). If you are concerned about processing large query responses in-memory (as the current `envoy` solution requires), then consider using [`grpc-gateway`](https://grpc-ecosystem.github.io/grpc-gateway/) instead.
 
 We'd also welcome any contributions towards proper newline-delimited JSON transcoding support in PostgRPC directly.
+
+### Security Disclaimer
+
+DO NOT expose a JSON-transcoded PostgRPC service to the public web without additional security measures! For examples of how to lock down a database for "public" consumption, take a look at the [`auth` example](../auth).

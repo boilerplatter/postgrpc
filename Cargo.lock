@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "postgrpc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "deadpool-postgres",
@@ -1189,6 +1189,7 @@ dependencies = [
  "tonic-build",
  "tonic-health",
  "tonic-reflection",
+ "tonic-web",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -1864,6 +1865,24 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e392f7556972523aa87ddb0fc7f2d2ce530559956706aa081bb0bd8fed158559"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "hyper",
+ "pin-project",
+ "tonic",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

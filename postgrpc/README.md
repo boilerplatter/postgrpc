@@ -2,7 +2,7 @@
 [![Latest Version](https://img.shields.io/crates/v/postgrpc.svg)](https://crates.io/crates/postgrpc)
 [![Documentation](https://docs.rs/postgrpc/badge.svg)](https://docs.rs/postgrpc)
 
-Query your Postgres databases directly using gRPC or transcoded JSON.
+Query your Postgres databases directly using gRPC, gRPC-web, or transcoded JSON.
 
 ## Table of Contents
 
@@ -17,9 +17,11 @@ Query your Postgres databases directly using gRPC or transcoded JSON.
     3. [Usage](#usage)
 3. [Examples](#examples)
     1. [JSON Transcoding](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/json-transcoding)
-    2. [Load Balancing](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/load-balancing)
-    3. [Auth](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/auth)
+    2. [gRPC-web](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/grpc-web)
+    3. [Load Balancing](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/load-balancing)
+    4. [Auth](https://github.com/boilerplatter/postgrpc/tree/master/postgrpc/examples/auth)
 4. [FAQ](#faq)
+5. [Roadmap](#roadmap)
 
 ## Introduction
 
@@ -119,11 +121,10 @@ Contributions are welcome in the form of bug reporting, feature requests, softwa
 
 ## Roadmap
 
-- [] [gRPC-web](https://github.com/grpc/grpc-web) support
-- [] Native JSON transcoding without needing an additional proxy
-- [] [`LISTEN`/`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html)-based channels
-- [] [`MATERIALIZED VIEW`](https://www.postgresql.org/docs/14/rules-materializedviews.html)-based update streams
-- [] Explicit query registration and compile-time gRPC-compatible `proto` generation for an alternative to the dynamic `Query` interfaces
+- [ ] Native JSON transcoding without needing an additional proxy
+- [ ] [`LISTEN`/`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html)-based channels
+- [ ] [`MATERIALIZED VIEW`](https://www.postgresql.org/docs/14/rules-materializedviews.html)-based update streams
+- [ ] Explicit query registration and compile-time gRPC-compatible `proto` generation for an alternative to the dynamic `Query` interfaces
 
 ## Associated Crates
 

@@ -95,6 +95,10 @@ version = "0.7.0"
 optional = true
 version = "0.5.0"
 
+[dependencies.tonic-web]
+optional = true
+version = "0.4.0"
+
 [dependencies.tower-http]
 default-features = false
 features = ["trace"]
@@ -135,6 +139,7 @@ transaction = ["uuid"]
 server = ["envy"]
 health = ["tonic-health"]
 reflection = ["tonic-reflection"]
+web = ["tonic-web"]
 role-header = []
 
 # TODO: features
@@ -142,3 +147,4 @@ role-header = []
 # - watch-able materialized views
 # - server log output runtime configuration
 # - native json transcoding
+# - gRPC web support

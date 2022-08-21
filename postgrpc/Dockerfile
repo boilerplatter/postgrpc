@@ -25,7 +25,7 @@ COPY ./postguard/Cargo.* ./postguard/
 COPY Cargo.toml .
 
 # compile postgrpc from source
-RUN cargo build --package postgrpc --release
+RUN cargo build --package postgrpc --release --all-features
 
 # use multi-stage build for smaller production image
 FROM gcr.io/distroless/cc
