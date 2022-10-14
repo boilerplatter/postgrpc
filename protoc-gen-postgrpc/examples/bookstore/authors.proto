@@ -1,0 +1,30 @@
+syntax = "proto3";
+package authors.v1;
+
+import "google/protobuf/empty.proto";
+import "annotations.proto";
+
+service Authors {
+  rpc GetAuthors (google.protobuf.Empty) returns (stream Author) {
+    option (postgrpc.query) = {
+      path: "./get_authors.sql"
+    };
+  }
+
+  rpc CreateAuthor (CreateAuthorRequest) returns (Author) {
+    option (postgrpc.query) = {
+      path: "./create_author.sql"
+    };
+  }
+}
+
+message CreateAuthorRequest {
+  string first_name = 1;
+  string last_name = 2;
+}
+
+message Author {
+  string id = 1;
+  string first_name = 2;
+  string last_name = 3;
+}

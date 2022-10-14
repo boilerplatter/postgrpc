@@ -1,0 +1,15 @@
+syntax = "proto3";
+package postgrpc;
+
+import "google/protobuf/descriptor.proto";
+
+// SQL Query validation configuration for an rpc method
+message Query {
+  // file path of external .sql file
+  string path = 1;
+}
+
+extend google.protobuf.MethodOptions {
+  // FIXME: verify that this registration number isn't already taken
+  Query query = 72295729;
+}

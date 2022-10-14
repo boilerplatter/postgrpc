@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "postgrpc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "deadpool-postgres",
@@ -1340,6 +1340,10 @@ dependencies = [
  "bytes",
  "prost 0.11.0",
 ]
+
+[[package]]
+name = "protoc-gen-postgrpc"
+version = "0.1.0"
 
 [[package]]
 name = "quote"
