@@ -15,10 +15,13 @@ mod codegen;
 mod postgres;
 #[cfg(feature = "postgres")]
 mod proto;
+mod service_generator;
+#[cfg(feature = "postgres")]
+mod validator;
 
 #[allow(unreachable_pub)]
 mod annotations {
     include!("../gen/postgrpc.rs");
 }
 
-pub use codegen::{configure, Builder};
+pub use codegen::{compile_protos, configure, Builder};

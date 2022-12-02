@@ -36,14 +36,14 @@ impl<'a> Method<'a> {
     /// Extract the postgrpc options from a `prost_types::MethodDescriptorProto`
     /// and pair the inputs and outputs with their Message descriptors to create a [`Method`]
     pub(crate) fn from_method_descriptor(
-        method: MethodDescriptorProto,
-        messages: &'a HashMap<String, DescriptorProto>,
+        method: &'a MethodDescriptorProto,
+        messages: &'a HashMap<String, &'a DescriptorProto>,
     ) -> Result<Option<Self>, io::Error> {
         let input_type = get_message(messages, method.input_type())?;
         let output_type = get_message(messages, method.output_type())?;
         let name = method.name().to_string();
 
-        if let Some(options) = method.options {
+        if let Some(options) = &method.options {
             match options.extension_data(annotations::QUERY) {
                 Ok(annotations::Query {
                     source: Some(source),
@@ -143,7 +143,7 @@ impl<'a> Method<'a> {
 
 /// Helper function to extract a reference to a Message by name
 fn get_message<'a, 'b>(
-    messages: &'a HashMap<String, DescriptorProto>,
+    messages: &'a HashMap<String, &'a DescriptorProto>,
     message_name: &'b str,
 ) -> io::Result<&'a DescriptorProto> {
     if message_name == EMPTY_DESCRIPTOR.name() {
@@ -152,7 +152,7 @@ fn get_message<'a, 'b>(
         message_name
             .split('.')
             .last()
-            .and_then(|message_name| messages.get(message_name))
+            .and_then(|message_name| messages.get(message_name).map(|message| *message))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,

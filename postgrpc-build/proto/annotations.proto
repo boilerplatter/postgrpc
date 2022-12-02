@@ -14,6 +14,5 @@ message Query {
 }
 
 extend google.protobuf.MethodOptions {
-  // FIXME: verify that this registration number isn't already taken
   Query query = 72295729;
 }
