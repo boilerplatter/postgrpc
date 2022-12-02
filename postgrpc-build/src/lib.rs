@@ -10,7 +10,15 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod codegen;
+#[cfg(feature = "postgres")]
 mod postgres;
-mod prost;
+#[cfg(feature = "postgres")]
+mod proto;
 
-pub use crate::prost::{configure, Builder};
+#[allow(unreachable_pub)]
+mod annotations {
+    include!("../gen/postgrpc.rs");
+}
+
+pub use codegen::{configure, Builder};
