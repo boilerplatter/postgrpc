@@ -5,8 +5,12 @@ import "google/protobuf/descriptor.proto";
 
 // SQL Query validation configuration for an rpc method
 message Query {
-  // file path of external .sql file
-  string path = 1;
+  oneof source {
+    // file path of external .sql file
+    string file = 1;
+    // inlined sql query
+    string sql = 2;
+  }
 }
 
 extend google.protobuf.MethodOptions {

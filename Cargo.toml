@@ -3,5 +3,5 @@
 members = [
   "postgrpc",
   "postguard",
-  "protoc-gen-postgrpc",
+  "postgrpc-build",
 ]

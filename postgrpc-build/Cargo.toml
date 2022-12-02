@@ -1,0 +1,29 @@
+[package]
+name = "postgrpc-build"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+postgres = "0.19.4"
+prettyplease = "0.1.21"
+proc-macro2 = "1.0.47"
+quote = "1.0.21"
+syn = "1.0.104"
+tempfile = "3.3.0"
+tonic-build = "0.8.4"
+which = "4.3.0"
+
+[dependencies.prost]
+git = "https://github.com/nswarm/prost.git"
+branch = "extensions"
+version = "0.10.1" 
+
+[dependencies.prost-build]
+git = "https://github.com/nswarm/prost.git"
+branch = "extensions"
+version = "0.10.1" 
+
+[dependencies.prost-types]
+git = "https://github.com/nswarm/prost.git"
+branch = "extensions"
+version = "0.10.1" 
