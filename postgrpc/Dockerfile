@@ -1,4 +1,4 @@
-FROM rust:1.63 AS builder
+FROM rust:1.64 AS builder
 
 # set up working directory
 WORKDIR /app

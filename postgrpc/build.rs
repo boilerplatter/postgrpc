@@ -7,8 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut packages = vec![".postgres.v1"];
 
     #[cfg(feature = "transaction")]
-    routes.push("./proto/transaction.proto");
-    packages.push(".transaction.v1");
+    {
+        routes.push("./proto/transaction.proto");
+        packages.push(".transaction.v1");
+    }
 
     #[allow(unused_mut)]
     let mut builder = tonic_build::configure();

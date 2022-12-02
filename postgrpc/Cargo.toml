@@ -28,26 +28,26 @@ doc = false
 required-features = ["server", "deadpool"]
 
 [build-dependencies]
-pbjson-build = "0.4.0"
-tonic-build = "0.8.0"
+pbjson-build = "0.5.1"
+tonic-build = "0.8.4"
 
 [dependencies]
-bytes = "1.2.1"
-futures-util = "0.3.23"
+bytes = "1.3.0"
+futures-util = "0.3.25"
 num = "0.4.0"
-pbjson = "0.4.0"
-pbjson-types = "0.4.0"
-postgres_array = "0.11.0"
-prost = "0.11.0"
-serde_json = "1.0.83"
-thiserror = "1.0.32"
-tokio-stream = "0.1.9"
-tracing = "0.1.36"
+pbjson = "0.5.1"
+pbjson-types = "0.5.1"
+postgres_array = "0.11.1"
+prost = "0.11.3"
+serde_json = "1.0.89"
+thiserror = "1.0.37"
+tokio-stream = "0.1.11"
+tracing = "0.1.37"
 
 [dependencies.deadpool-postgres]
 optional = true
 features = ["serde"]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.envy]
 optional = true
@@ -55,11 +55,11 @@ version = "0.4.2"
 
 [dependencies.native-tls]
 optional = true
-version = "0.2.10"
+version = "0.2.11"
 
 [dependencies.num_cpus]
 optional = true
-version = "1.13.1"
+version = "1.14.0"
 
 [dependencies.pin-project-lite]
 optional = true
@@ -71,33 +71,33 @@ version = "0.5.0"
 
 [dependencies.serde]
 features = ["derive"]
-version = "1.0.143"
+version = "1.0.148"
 
 [dependencies.tokio]
 default-features = false
 features = ["macros", "signal", "rt-multi-thread"]
-version = "1.20.1"
+version = "1.22.0"
 
 [dependencies.tokio-postgres]
 features = ["with-serde_json-1"]
-version = "0.7.6"
+version = "0.7.7"
 
 [dependencies.tonic]
 default-features = false
 features = ["codegen", "prost", "transport"]
-version = "0.8.0"
+version = "0.8.3"
 
 [dependencies.tonic-health]
 optional = true
-version = "0.7.0"
+version = "0.8.0"
 
 [dependencies.tonic-reflection]
 optional = true
-version = "0.5.0"
+version = "0.6.0"
 
 [dependencies.tonic-web]
 optional = true
-version = "0.4.0"
+version = "0.5.0"
 
 [dependencies.tower-http]
 default-features = false
@@ -106,12 +106,12 @@ version = "0.3.4"
 
 [dependencies.tracing-subscriber]
 features = ["env-filter"]
-version = "0.3.15"
+version = "0.3.16"
 
 [dependencies.uuid]
 optional = true
 features = ["v4"]
-version = "1.1.2"
+version = "1.2.2"
 
 [features]
 default = [

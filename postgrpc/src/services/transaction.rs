@@ -12,7 +12,7 @@ use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response
 use uuid::Uuid;
 
 /// Compiled protocol buffers for the Transaction service
-#[allow(unreachable_pub, missing_docs)]
+#[allow(unreachable_pub, missing_docs, clippy::derive_partial_eq_without_eq)]
 mod proto {
     tonic::include_proto!("transaction.v1");
 }

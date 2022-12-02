@@ -11,7 +11,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 
 /// Compiled protocol buffers for the Postgres service
-#[allow(unreachable_pub, missing_docs)]
+#[allow(unreachable_pub, missing_docs, clippy::derive_partial_eq_without_eq)]
 mod proto {
     tonic::include_proto!("postgres.v1");
 }
