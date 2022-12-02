@@ -1,0 +1,23 @@
+syntax = "proto3";
+package inline;
+
+import "google/protobuf/empty.proto";
+import "annotations.proto";
+
+service Inline {
+  rpc TestInline (google.protobuf.Empty) returns (TestValue) {
+    option (postgrpc.query) = {
+      sql: "select 1 as value"
+    };
+  }
+
+  rpc TestParameterizedInline (TestValue) returns (TestValue) {
+    option (postgrpc.query) = {
+      sql: "select $1::int as value"
+    };
+  }
+}
+
+message TestValue {
+  int32 value = 1;
+}

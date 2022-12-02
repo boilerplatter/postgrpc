@@ -2,7 +2,9 @@ use prost::Message;
 use std::{io, path::Path};
 
 /// Validate a set of `postgrpc`-annotated protos against a database
-pub(crate) fn validate(
+#[allow(unreachable_pub)]
+#[doc(hidden)]
+pub fn validate(
     connection_string: &str,
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
@@ -34,6 +36,7 @@ pub(crate) fn validate(
 
         // validate the inputs and outputs of each postgrpc-annotated method
         for method in methods {
+            // FIXME: use proper logging
             println!("Validating rpc {} against the database", method.name());
 
             // prepare the method's SQL query with the database
@@ -78,6 +81,7 @@ fn compile_file_descriptors(
         cmd.arg(proto.as_ref());
     }
 
+    // FIXME: use proper logging
     println!("Running: {:?}", cmd);
 
     let output = cmd.output().map_err(|error| {
@@ -113,18 +117,4 @@ fn compile_file_descriptors(
             )
         },
     )
-}
-
-#[cfg(test)]
-mod test {
-    // FIXME: turn this into an integration test instead of a unit test
-    #[test]
-    fn validates_protos() {
-        super::validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
-            &["./examples/bookstore/authors.proto"],
-            &["./examples/bookstore", "./proto"],
-        )
-        .unwrap();
-    }
 }

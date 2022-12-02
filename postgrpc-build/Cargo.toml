@@ -37,3 +37,4 @@ version = "0.8.4"
 
 [features]
 default = ["postgres"]
+testing = []

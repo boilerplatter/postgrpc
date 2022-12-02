@@ -25,3 +25,5 @@ mod annotations {
 }
 
 pub use codegen::{compile_protos, configure, Builder};
+#[cfg(feature = "testing")]
+pub use validator::validate;

@@ -1,0 +1,17 @@
+syntax = "proto3";
+package file;
+
+import "google/protobuf/empty.proto";
+import "annotations.proto";
+
+service File {
+  rpc TestInline (google.protobuf.Empty) returns (TestValue) {
+    option (postgrpc.query) = {
+      file: "./tests/sql/file_query.sql"
+    };
+  }
+}
+
+message TestValue {
+  int32 value = 1;
+}
