@@ -16,21 +16,12 @@ static EMPTY_DESCRIPTOR: Lazy<DescriptorProto> = Lazy::new(|| DescriptorProto {
 });
 
 /// Internal representation of input and output messages
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Message<'a> {
-    proto: &'a DescriptorProto,
     fields: Vec<Field<'a>>,
 }
 
 impl<'a> Message<'a> {
-    /// Create a new message without attempting to resolve its fields
-    fn new(proto: &'a DescriptorProto) -> Self {
-        Self {
-            proto,
-            fields: Vec::new(),
-        }
-    }
-
     /// Create a new Message and resolve its fields' dependency graph along the way
     fn try_resolve(
         proto: &'a DescriptorProto,
@@ -46,11 +37,7 @@ impl<'a> Message<'a> {
 
         fields.sort_unstable_by_key(|field| field.number());
 
-        Ok(Self { proto, fields })
-    }
-
-    fn name(&self) -> &str {
-        self.proto.name()
+        Ok(Self { fields })
     }
 }
 
@@ -113,7 +100,7 @@ impl<'a> Field<'a> {
             FieldType::Message => {
                 let message_name = proto.type_name();
 
-                // FIXME: check nested messages, too! Should be able to retrieve from the parent
+                // FIXME: check nested messages, too! See the enum resolver for inspiration
                 let composite_type = messages
                     .get(message_name)
                     .copied()
@@ -143,6 +130,91 @@ impl<'a> Field<'a> {
                 composite_type: None,
             }),
         }
+    }
+
+    /// Validate a field against a Postgres type
+    fn validate(&'a self, postgres_type: &'a PostgresType) -> io::Result<()> {
+        if !match self.r#type() {
+            FieldType::Bool => matches!(postgres_type, &PostgresType::BOOL),
+            FieldType::Double => {
+                matches!(
+                    postgres_type,
+                    &PostgresType::FLOAT8 | &PostgresType::NUMERIC
+                )
+            }
+            FieldType::Float => {
+                matches!(
+                    postgres_type,
+                    &PostgresType::FLOAT4 | &PostgresType::NUMERIC
+                )
+            }
+            FieldType::Int32
+            | FieldType::Uint32
+            | FieldType::Sint32
+            | FieldType::Sfixed32
+            | FieldType::Fixed32 => {
+                matches!(postgres_type, &PostgresType::INT4)
+            }
+            FieldType::Int64
+            | FieldType::Uint64
+            | FieldType::Sint64
+            | FieldType::Sfixed64
+            | FieldType::Fixed64 => {
+                matches!(postgres_type, &PostgresType::INT8)
+            }
+            FieldType::Bytes => matches!(postgres_type, &PostgresType::BYTEA),
+            FieldType::String => {
+                matches!(postgres_type, &PostgresType::TEXT | &PostgresType::VARCHAR)
+            }
+            FieldType::Enum => match (postgres_type.kind(), self.composite_type.as_ref()) {
+                (
+                    postgres::types::Kind::Enum(members),
+                    Some(CompositeType::Enum(EnumDescriptorProto {
+                        value: enum_value, ..
+                    })),
+                ) if Some(postgres_type.name()) == self.type_name().split('.').last() => {
+                    // validate the enum members
+                    let enum_members = enum_value
+                        .iter()
+                        .map(|member| member.name())
+                        .collect::<Vec<_>>();
+
+                    if &enum_members != members {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Expected field {} to be an enum with members {members:?}, but found members {enum_members:?} instead",
+                                self.name(),
+                            )
+                        ));
+                    } else {
+                        true
+                    }
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Expected field {} to be of type {postgres_type}, but it was incompatible proto type {}",
+                            self.name(),
+                            self.type_name(),
+                        )
+                    ));
+                }
+            },
+            fixme => todo!("FIXME: support {fixme:#?}"),
+        } {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Expected field {} to be of type {postgres_type}, but it was incompatible proto type {:?}",
+                    self.name(),
+                    self.r#type(),
+                )
+            ));
+        }
+
+        Ok(())
     }
 
     fn number(&self) -> i32 {
@@ -235,52 +307,43 @@ impl<'a> Method<'a> {
     }
 
     /// Validate the method's input against some Postgres statement parameter types
-    pub(crate) fn validate_input(&self, params: &[postgres::types::Type]) -> io::Result<()> {
-        let message_name = self.input_type.name();
+    pub(crate) fn validate_input(&self, params: &[PostgresType]) -> io::Result<()> {
         let fields = &self.input_type.fields;
 
-        if fields.len() != params.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Expected {} parameters, but input message {message_name} has {} fields",
-                    params.len(),
-                    fields.len(),
-                ),
-            ));
-        }
-
-        // validate fields and params
-        for (field, param) in fields.iter().zip(params.iter()) {
-            validate_field(field, param, message_name)?;
-        }
-
-        Ok(())
+        validate_fields(fields, params)
     }
 
     /// Validate the method's output against some Postgres statement column types
     pub(crate) fn validate_output(&self, columns: &[postgres::Column]) -> io::Result<()> {
-        let message_name = self.output_type.name();
         let fields = &self.output_type.fields;
 
-        if fields.len() != columns.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Expected {} columns, but output message {message_name} has {} fields",
-                    columns.len(),
-                    fields.len(),
-                ),
-            ));
-        }
+        let types = columns
+            .iter()
+            .map(|column| column.type_().clone())
+            .collect::<Vec<_>>();
 
-        // validate fields and params
-        for (field, column) in fields.iter().zip(columns.iter()) {
-            validate_field(field, column.type_(), message_name)?;
-        }
-
-        Ok(())
+        validate_fields(fields, &types)
     }
+}
+
+/// Validate a set of fields against Postgres types
+fn validate_fields<'a>(fields: &[Field<'a>], types: &[PostgresType]) -> io::Result<()> {
+    if fields.len() != types.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Expected {} fields, but found {}",
+                fields.len(),
+                types.len()
+            ),
+        ));
+    }
+
+    for (field, type_) in fields.iter().zip(types) {
+        field.validate(type_)?;
+    }
+
+    Ok(())
 }
 
 /// Helper function to extract a Message from top-level messages by name
@@ -290,7 +353,7 @@ fn get_message<'a, 'b>(
     message_name: &'b str,
 ) -> io::Result<Message<'a>> {
     if message_name == EMPTY_DESCRIPTOR.name() {
-        Ok(Message::new(&EMPTY_DESCRIPTOR))
+        Ok(Message::default())
     } else {
         // get the message from the top-level context
         let message = messages.get(message_name).copied().ok_or_else(|| {
@@ -303,95 +366,4 @@ fn get_message<'a, 'b>(
         // resolve the message's field graph
         Message::try_resolve(message, messages, enums)
     }
-}
-
-/// Validates a single message field against known messages and enums
-// FIXME: make this a method on the Field type
-// FIXME: remove the message_name requirement (wrap at the caller if needed)
-fn validate_field<'a>(
-    field: &'a Field<'a>,
-    postgres_type: &'a PostgresType,
-    message_name: &'a str,
-) -> io::Result<()> {
-    if !match field.r#type() {
-        FieldType::Bool => matches!(postgres_type, &PostgresType::BOOL),
-        FieldType::Double => {
-            matches!(
-                postgres_type,
-                &PostgresType::FLOAT8 | &PostgresType::NUMERIC
-            )
-        }
-        FieldType::Float => {
-            matches!(
-                postgres_type,
-                &PostgresType::FLOAT4 | &PostgresType::NUMERIC
-            )
-        }
-        FieldType::Int32
-        | FieldType::Uint32
-        | FieldType::Sint32
-        | FieldType::Sfixed32
-        | FieldType::Fixed32 => {
-            matches!(postgres_type, &PostgresType::INT4)
-        }
-        FieldType::Int64
-        | FieldType::Uint64
-        | FieldType::Sint64
-        | FieldType::Sfixed64
-        | FieldType::Fixed64 => {
-            matches!(postgres_type, &PostgresType::INT8)
-        }
-        FieldType::Bytes => matches!(postgres_type, &PostgresType::BYTEA),
-        FieldType::String => {
-            matches!(postgres_type, &PostgresType::TEXT | &PostgresType::VARCHAR)
-        }
-        FieldType::Enum => match (postgres_type.kind(), field.composite_type.as_ref()) {
-            (
-                postgres::types::Kind::Enum(members),
-                Some(CompositeType::Enum(EnumDescriptorProto {
-                    value: enum_value, ..
-                })),
-            ) if Some(postgres_type.name()) == field.type_name().split('.').last() => {
-                // validate the enum members
-                let enum_members = enum_value
-                    .iter()
-                    .map(|member| member.name())
-                    .collect::<Vec<_>>();
-
-                if &enum_members != members {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "Expected field {} of message {message_name} to be an enum with members {members:?}, but found members {enum_members:?} instead",
-                            field.name(),
-                        )
-                    ));
-                } else {
-                    true
-                }
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Expected field {} of message {message_name} to be of type {postgres_type}, but it was incompatible proto type {}",
-                        field.name(),
-                        field.type_name(),
-                    )
-                ));
-            }
-        },
-        fixme => todo!("FIXME: support {fixme:#?}"),
-    } {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Expected field {} of message {message_name} to be of type {postgres_type}, but it was incompatible proto type {:?}",
-                field.name(),
-                field.r#type(),
-            )
-        ));
-    }
-
-    Ok(())
 }
