@@ -9,6 +9,11 @@ pub fn validate(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
 ) -> io::Result<()> {
+    // set up the postgres client for validation
+    let mut client = postgres::Client::connect(connection_string, postgres::NoTls) // FIXME: conditionally enable TLS
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
+
+    // compile the shared file descriptors
     let file_descriptor_set = compile_file_descriptors(protos, includes)?;
 
     for file in file_descriptor_set.file.iter() {
@@ -16,14 +21,24 @@ pub fn validate(
         let messages = file
             .message_type
             .iter()
-            .map(|descriptor| (descriptor.name().to_string(), descriptor))
+            .map(|descriptor| {
+                (
+                    format!(".{}.{}", file.package(), descriptor.name()),
+                    descriptor,
+                )
+            })
             .collect::<std::collections::HashMap<_, _>>();
 
         // extract the enums from the original file descriptor
         let enums = file
             .enum_type
             .iter()
-            .map(|descriptor| (descriptor.name().to_string(), descriptor))
+            .map(|descriptor| {
+                (
+                    format!(".{}.{}", file.package(), descriptor.name()),
+                    descriptor,
+                )
+            })
             .collect::<std::collections::HashMap<_, _>>();
 
         // extract the postgrpc-annotated methods from the original file descriptor
@@ -35,11 +50,6 @@ pub fn validate(
                 super::proto::Method::from_method_descriptor(method, &messages, &enums).transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
-
-        // set up the postgres client for validation
-        // FIXME: share this client!
-        let mut client = postgres::Client::connect(connection_string, postgres::NoTls) // FIXME: enable TLS
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
         // validate the inputs and outputs of each postgrpc-annotated method
         for method in methods {

@@ -13,7 +13,13 @@ service Enum {
 
   rpc TestEnumInput (TestValue) returns (TestValue) {
     option (postgrpc.query) = {
-      sql: "select $1::genre as preferred_genre"
+      sql: "select $1::\"Genre\" as preferred_genre"
+    };
+  }
+
+  rpc TestNestedEnumInput (TestNestedEnums) returns (TestNestedEnums) {
+    option (postgrpc.query) = {
+      sql: "select $1::\"NestedGenre\" as preferred_genre"
     };
   }
 }
@@ -27,4 +33,16 @@ enum Genre {
 
 message TestValue {
   Genre preferred_genre = 1;
+}
+
+
+message TestNestedEnums {
+  enum NestedGenre {
+    FANTASY = 0;
+    SCI_FI = 1;
+    ROMANCE = 2;
+    NON_FICTION = 3;
+  }
+
+  NestedGenre preferred_genre = 1;
 }
