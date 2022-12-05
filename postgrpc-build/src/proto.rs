@@ -1,7 +1,11 @@
 use super::annotations;
 use once_cell::sync::Lazy;
+use postgres::types::Type as PostgresType;
 use prost::{extension::ExtensionSetError, Extendable};
-use prost_types::{DescriptorProto, MethodDescriptorProto};
+use prost_types::{
+    field_descriptor_proto::Type as FieldType, DescriptorProto, EnumDescriptorProto,
+    FieldDescriptorProto, MethodDescriptorProto,
+};
 use std::{collections::HashMap, fs, io};
 
 // Special case of the Empty protobuf name
@@ -14,12 +18,16 @@ static EMPTY_DESCRIPTOR: Lazy<DescriptorProto> = Lazy::new(|| DescriptorProto {
 /// based on [`prost_types::MethodDescriptorProto`]
 #[derive(Debug)]
 pub(crate) struct Method<'a> {
+    // FIXME: handle nested descriptors
+    // FIXME: handle external (but referenced) descriptors (is this the same as nested?)
+    // TODO: add back MethodDescriptorProto fields needed for code generation
+    // (e.g. name, server_streaming, etc)
     input_type: &'a DescriptorProto,
     output_type: &'a DescriptorProto,
     query: String,
     name: String,
-    // TODO: add back MethodDescriptorProto fields needed for code generation
-    // (e.g. name, server_streaming, etc)
+    // FIXME: resolve referenced enums and messages into better input and output types
+    enums: &'a HashMap<String, &'a EnumDescriptorProto>,
 }
 
 impl<'a> Method<'a> {
@@ -38,6 +46,7 @@ impl<'a> Method<'a> {
     pub(crate) fn from_method_descriptor(
         method: &'a MethodDescriptorProto,
         messages: &'a HashMap<String, &'a DescriptorProto>,
+        enums: &'a HashMap<String, &'a EnumDescriptorProto>,
     ) -> Result<Option<Self>, io::Error> {
         let input_type = get_message(messages, method.input_type())?;
         let output_type = get_message(messages, method.output_type())?;
@@ -58,6 +67,7 @@ impl<'a> Method<'a> {
                         output_type,
                         query,
                         name,
+                        enums,
                     }));
                 }
                 Ok(..) => {
@@ -90,17 +100,9 @@ impl<'a> Method<'a> {
             ));
         }
 
+        // FIXME: order the fields by tag/number, not by proto file order!
         for (field, param) in fields.iter().zip(params.iter()) {
-            if super::postgres::PostgresType::from(param) != field.r#type() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Expected field {} of message {message_name} to be of type {param}, but it was incompatible proto type {:?}",
-                        field.name(),
-                        field.r#type(),
-                    )
-                ));
-            }
+            validate_field(self.enums, field, param, message_name)?;
         }
 
         Ok(())
@@ -122,37 +124,27 @@ impl<'a> Method<'a> {
             ));
         }
 
+        // FIXME: order the fields by tag/number(field.number()), not by proto file order!
         for (field, column) in fields.iter().zip(columns.iter()) {
-            let column = column.type_();
-
-            if super::postgres::PostgresType::from(column) != field.r#type() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Expected field {} of message {message_name} to be of type {column}, but it was incompatible proto type {:?}",
-                        field.name(),
-                        field.r#type(),
-                    )
-                ));
-            }
+            validate_field(self.enums, field, column.type_(), message_name)?;
         }
 
         Ok(())
     }
 }
 
-/// Helper function to extract a reference to a Message by name
+/// Helper function to extract a Message by name
 fn get_message<'a, 'b>(
     messages: &'a HashMap<String, &'a DescriptorProto>,
     message_name: &'b str,
 ) -> io::Result<&'a DescriptorProto> {
     if message_name == EMPTY_DESCRIPTOR.name() {
-        Ok(&*EMPTY_DESCRIPTOR)
+        Ok(&EMPTY_DESCRIPTOR)
     } else {
         message_name
             .split('.')
             .last()
-            .and_then(|message_name| messages.get(message_name).map(|message| *message))
+            .and_then(|message_name| messages.get(message_name).copied())
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -160,4 +152,107 @@ fn get_message<'a, 'b>(
                 )
             })
     }
+}
+
+/// Helper function to extract an Enum by name
+fn get_enum<'a, 'b>(
+    enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+    enum_name: &'b str,
+) -> io::Result<&'a EnumDescriptorProto> {
+    enum_name
+        .split('.')
+        .last()
+        .and_then(|enum_name| enums.get(enum_name).copied())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Expected enum {enum_name}, but it doesn't exist"),
+            )
+        })
+}
+
+/// Validates a single message field against known messages and enums
+fn validate_field<'a>(
+    enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+    field: &'a FieldDescriptorProto,
+    postgres_type: &'a PostgresType,
+    message_name: &'a str,
+) -> io::Result<()> {
+    if !match field.r#type() {
+        FieldType::Bool => matches!(postgres_type, &PostgresType::BOOL),
+        FieldType::Double => {
+            matches!(
+                postgres_type,
+                &PostgresType::FLOAT8 | &PostgresType::NUMERIC
+            )
+        }
+        FieldType::Float => {
+            matches!(
+                postgres_type,
+                &PostgresType::FLOAT4 | &PostgresType::NUMERIC
+            )
+        }
+        FieldType::Int32
+        | FieldType::Uint32
+        | FieldType::Sint32
+        | FieldType::Sfixed32
+        | FieldType::Fixed32 => {
+            matches!(postgres_type, &PostgresType::INT4)
+        }
+        FieldType::Int64
+        | FieldType::Uint64
+        | FieldType::Sint64
+        | FieldType::Sfixed64
+        | FieldType::Fixed64 => {
+            matches!(postgres_type, &PostgresType::INT8)
+        }
+        FieldType::Bytes => matches!(postgres_type, &PostgresType::BYTEA),
+        FieldType::String => {
+            matches!(postgres_type, &PostgresType::TEXT | &PostgresType::VARCHAR)
+        }
+        FieldType::Enum => match postgres_type.kind() {
+            // validate the enum name
+            postgres::types::Kind::Enum(members)
+                if Some(postgres_type.name())
+                    == field
+                        .type_name()
+                        .split('.')
+                        .last()
+                        .map(|name| name.to_lowercase())
+                        .as_deref() =>
+            {
+                // validate the enum members
+                let enum_members: Vec<_> = get_enum(enums, field.type_name())?
+                    .value
+                    .iter()
+                    .map(|member| member.name())
+                    .collect();
+
+                if &enum_members != members {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Expected field {} of message {message_name} to be an enum with members {members:?}, but found members {enum_members:?} instead",
+                            field.name(),
+                        )
+                    ));
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        },
+        fixme => todo!("FIXME: support {fixme:#?}"),
+    } {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Expected field {} of message {message_name} to be of type {postgres_type}, but it was incompatible proto type {:?}",
+                field.name(),
+                field.r#type(),
+            )
+        ));
+    }
+
+    Ok(())
 }

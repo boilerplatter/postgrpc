@@ -12,8 +12,6 @@
 
 mod codegen;
 #[cfg(feature = "postgres")]
-mod postgres;
-#[cfg(feature = "postgres")]
 mod proto;
 mod service_generator;
 #[cfg(feature = "postgres")]

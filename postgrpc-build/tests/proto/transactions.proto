@@ -1,13 +1,13 @@
 syntax = "proto3";
-package file;
+package transactions;
 
 import "google/protobuf/empty.proto";
 import "annotations.proto";
 
-service File {
-  rpc TestFile (google.protobuf.Empty) returns (TestValue) {
+service Transactions {
+  rpc TestTransactions (google.protobuf.Empty) returns (TestValue) {
     option (postgrpc.query) = {
-      file: "./tests/sql/file_query.sql"
+      sql: "begin; select 1::int as value; commit;"
     };
   }
 }

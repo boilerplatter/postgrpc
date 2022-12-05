@@ -1,13 +1,13 @@
 syntax = "proto3";
-package file;
+package cte;
 
 import "google/protobuf/empty.proto";
 import "annotations.proto";
 
-service File {
-  rpc TestFile (google.protobuf.Empty) returns (TestValue) {
+service Cte {
+  rpc TestCte (google.protobuf.Empty) returns (TestValue) {
     option (postgrpc.query) = {
-      file: "./tests/sql/file_query.sql"
+      file: "./tests/sql/cte.sql"
     };
   }
 }

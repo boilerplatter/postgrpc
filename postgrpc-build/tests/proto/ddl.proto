@@ -1,0 +1,13 @@
+syntax = "proto3";
+package ddl;
+
+import "google/protobuf/empty.proto";
+import "annotations.proto";
+
+service Ddl {
+  rpc TestDdl (google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (postgrpc.query) = {
+      sql: "create table if not exists foo (id serial primary key)"
+    };
+  }
+}

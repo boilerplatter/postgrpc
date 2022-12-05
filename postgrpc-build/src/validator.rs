@@ -19,13 +19,20 @@ pub fn validate(
             .map(|descriptor| (descriptor.name().to_string(), descriptor))
             .collect::<std::collections::HashMap<_, _>>();
 
+        // extract the enums from the original file descriptor
+        let enums = file
+            .enum_type
+            .iter()
+            .map(|descriptor| (descriptor.name().to_string(), descriptor))
+            .collect::<std::collections::HashMap<_, _>>();
+
         // extract the postgrpc-annotated methods from the original file descriptor
         let methods = file
             .service
             .iter()
             .flat_map(|service| service.method.iter())
             .filter_map(|method| {
-                super::proto::Method::from_method_descriptor(method, &messages).transpose()
+                super::proto::Method::from_method_descriptor(method, &messages, &enums).transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
 

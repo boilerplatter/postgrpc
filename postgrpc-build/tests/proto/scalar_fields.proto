@@ -1,0 +1,30 @@
+syntax = "proto3";
+package scalar;
+
+import "annotations.proto";
+
+service Scalar {
+  rpc TestScalarFields (TestValue) returns (TestValue) {
+    option (postgrpc.query) = {
+      file: "./tests/sql/scalar_fields.sql"
+    };
+  }
+}
+
+message TestValue {
+  bool boolean = 1;
+  double double = 2;
+  float float = 3;
+  int32 int32 = 4;
+  uint32 uint32 = 5;
+  sint32 sint32 = 6;
+  sfixed32 sfixed32 = 7;
+  fixed32 fixed32 = 8;
+  int64 int64 = 9;
+  uint64 uint64 = 10;
+  sint64 sint64 = 11;
+  sfixed64 sfixed64 = 12;
+  fixed64 fixed64 = 13;
+  bytes bytes = 14;
+  string string = 15;
+}
