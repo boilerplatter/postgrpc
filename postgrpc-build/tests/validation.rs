@@ -45,6 +45,16 @@ mod test {
     }
 
     #[test]
+    fn validates_fields_in_order() {
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/field_order.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn validates_ctes() {
         validate(
             "postgresql://postgres:supersecretpassword@localhost:5432",
@@ -97,7 +107,6 @@ mod test {
     }
 
     // TOTEST:
-    // validates_field_param_order
     // validates_imported_descriptors
     // validates_nested_descriptors
     // validates_json

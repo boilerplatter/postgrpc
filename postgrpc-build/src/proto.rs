@@ -100,7 +100,11 @@ impl<'a> Method<'a> {
             ));
         }
 
-        // FIXME: order the fields by tag/number, not by proto file order!
+        // ensure fields are ordered by their tag/number instead of file order
+        let mut fields: Vec<_> = fields.iter().collect();
+        fields.sort_unstable_by_key(|field| field.number());
+
+        // validate fields and params
         for (field, param) in fields.iter().zip(params.iter()) {
             validate_field(self.enums, field, param, message_name)?;
         }
@@ -124,7 +128,11 @@ impl<'a> Method<'a> {
             ));
         }
 
-        // FIXME: order the fields by tag/number(field.number()), not by proto file order!
+        // ensure fields are ordered by their tag/number instead of file order
+        let mut fields: Vec<_> = fields.iter().collect();
+        fields.sort_unstable_by_key(|field| field.number());
+
+        // validate fields and params
         for (field, column) in fields.iter().zip(columns.iter()) {
             validate_field(self.enums, field, column.type_(), message_name)?;
         }
