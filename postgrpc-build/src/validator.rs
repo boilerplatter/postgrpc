@@ -2,9 +2,7 @@ use prost::Message;
 use std::{io, path::Path};
 
 /// Validate a set of `postgrpc`-annotated protos against a database
-#[allow(unreachable_pub)]
-#[doc(hidden)]
-pub fn validate(
+pub(crate) fn validate(
     connection_string: &str,
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
@@ -17,6 +15,8 @@ pub fn validate(
     let file_descriptor_set = compile_file_descriptors(protos, includes)?;
 
     for file in file_descriptor_set.file.iter() {
+        // FIXME: double-check that this works with module imports from other files...
+        // otherwise, consider flat-mapping all importable messages from across all files in the set
         // extract the message structs from the original file descriptor
         let messages = file
             .message_type
@@ -104,6 +104,7 @@ fn compile_file_descriptors(
     let output = cmd.output().map_err(|error| {
         io::Error::new(
             error.kind(),
+            // FIXME: copy #sourcing-protoc into our own docs
             format!("failed to invoke protoc (hint: https://docs.rs/prost-build/#sourcing-protoc): (path: {protoc:?}): {error}"),
         )
     })?;
@@ -130,8 +131,144 @@ fn compile_file_descriptors(
         |error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("invalid FileDescriptorSet: {}", error),
+                format!("invalid FileDescriptorSet: {error}"),
             )
         },
     )
+}
+
+#[cfg(test)]
+mod test {
+    use super::validate;
+    use crate::setup;
+
+    #[test]
+    fn validates_inline_queries() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/inline_query.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_file_queries() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/file_query.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_scalar_fields() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/scalar_fields.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_enums() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/enums.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_fields_in_order() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/field_order.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_ctes() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/cte.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validates_ddl_changes() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/ddl.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn rejects_missing_messages() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/missing_message.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .expect_err("Failed to reject method with missing message");
+    }
+
+    #[test]
+    fn rejects_invalid_sql() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/invalid_sql.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .expect_err("Failed to reject method with invalid SQL");
+    }
+
+    // FIXME: consider supporting pre-compiled transactions and multi-command statements
+    // (for now, no... stick with CTEs instead)
+    #[test]
+    fn rejects_transactions() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/transactions.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .expect_err("Failed to reject multi-statement transaction");
+    }
+
+    // TOTEST:
+    // validates_imported_descriptors
+    // validates_json
+    // validates_custom_types
+    // validates_generic_records
+    // validates_arrays
+    // validates_repeated_fields
 }

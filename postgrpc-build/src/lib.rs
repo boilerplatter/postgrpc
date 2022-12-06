@@ -14,6 +14,8 @@ mod codegen;
 #[cfg(feature = "postgres")]
 mod proto;
 mod service_generator;
+#[cfg(test)]
+mod setup;
 #[cfg(feature = "postgres")]
 mod validator;
 
@@ -23,5 +25,3 @@ mod annotations {
 }
 
 pub use codegen::{compile_protos, configure, Builder};
-#[cfg(feature = "testing")]
-pub use validator::validate;
