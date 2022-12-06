@@ -1,0 +1,51 @@
+syntax = "proto3";
+package composite;
+
+import "google/protobuf/empty.proto";
+import "annotations.proto";
+
+service Composite {
+  rpc TestCompositeOutput (google.protobuf.Empty) returns (TestValue) {
+    option (postgrpc.query) = {
+      sql: "select favorite_book from authors"
+    };
+  }
+
+  rpc TestCompositeInput (TestValue) returns (TestValue) {
+    option (postgrpc.query) = {
+      sql: "select $1::\"Book\" as favorite_book"
+    };
+  }
+
+  rpc TestNestedCompositeInput (TestNestedMessage) returns (TestNestedMessage) {
+    option (postgrpc.query) = {
+      sql: "select $1::\"NestedBook\" as favorite_book"
+    };
+  }
+}
+
+enum Genre {
+  FANTASY = 0;
+  SCI_FI = 1;
+  ROMANCE = 2;
+  NON_FICTION = 3;
+}
+
+message Book {
+  string name = 1;
+  Genre genre = 2; 
+}
+
+message TestValue {
+  Book favorite_book = 1;
+}
+
+
+message TestNestedMessage {
+  message NestedBook {
+    string name = 1;
+    Genre genre = 2; 
+  }
+
+  NestedBook favorite_book = 1;
+}

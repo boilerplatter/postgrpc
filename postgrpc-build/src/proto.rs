@@ -100,24 +100,43 @@ impl<'a> Field<'a> {
             FieldType::Message => {
                 let message_name = proto.type_name();
 
-                // FIXME: check nested messages, too! See the enum resolver for inspiration
-                let composite_type = messages
-                    .get(message_name)
-                    .copied()
-                    .map(|message| {
-                        Message::try_resolve(message, messages, enums).map(CompositeType::Message)
-                    })
-                    .transpose()?
-                    .map(Option::Some)
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Expected message {}, but it doesn't exist",
-                                proto.type_name()
-                            ),
-                        )
-                    })?;
+                // resolve both top-level and nested message resolution within a single file
+                let composite_type = match messages.get(message_name).copied() {
+                    Some(found_message) => Message::try_resolve(found_message, messages, enums)
+                        .map(CompositeType::Message)
+                        .map(Option::Some)?,
+                    None => match message_name.split('.').collect::<Vec<_>>()[..] {
+                        [_, package, parent, message_name] => messages
+                            .get(&format!(".{package}.{parent}"))
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "Expected message {}, but it doesn't exist",
+                                        proto.type_name()
+                                    ),
+                                )
+                            })?
+                            .nested_type
+                            .iter()
+                            .find(|nested_message| nested_message.name() == message_name)
+                            .map(|found_message| {
+                                Message::try_resolve(found_message, messages, enums)
+                            })
+                            .transpose()?
+                            .map(CompositeType::Message),
+                        _ => {
+                            // FIXME: handle recursive and deeply-nested cases better
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "Expected message {}, but it couldn't be found",
+                                    proto.type_name()
+                                ),
+                            ));
+                        }
+                    },
+                };
 
                 Ok(Self {
                     proto,
@@ -132,8 +151,22 @@ impl<'a> Field<'a> {
         }
     }
 
-    /// Validate a field against a Postgres type
-    fn validate(&'a self, postgres_type: &'a PostgresType) -> io::Result<()> {
+    /// Validate a field against a validate-able Postgres type
+    fn validate<T>(&'a self, comparator: &'a T) -> io::Result<()>
+    where
+        T: FieldValidate,
+    {
+        if let Some(name) = comparator.name() {
+            if self.name() != name {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Expected field {} but found {name} instead", self.name()),
+                ));
+            }
+        }
+
+        let postgres_type = comparator.type_();
+
         if !match self.r#type() {
             FieldType::Bool => matches!(postgres_type, &PostgresType::BOOL),
             FieldType::Double => {
@@ -190,6 +223,26 @@ impl<'a> Field<'a> {
                     } else {
                         true
                     }
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Expected field {} to be of type {postgres_type}, but it was incompatible proto type {}",
+                            self.name(),
+                            self.type_name(),
+                        )
+                    ));
+                }
+            },
+            FieldType::Message => match (postgres_type.kind(), self.composite_type.as_ref()) {
+                (
+                    postgres::types::Kind::Composite(fields),
+                    Some(CompositeType::Message(message)),
+                ) if Some(postgres_type.name()) == self.type_name().split('.').last() => {
+                    validate_fields(&message.fields, &fields)?;
+
+                    true
                 }
                 _ => {
                     return Err(io::Error::new(
@@ -317,30 +370,62 @@ impl<'a> Method<'a> {
     pub(crate) fn validate_output(&self, columns: &[postgres::Column]) -> io::Result<()> {
         let fields = &self.output_type.fields;
 
-        let types = columns
-            .iter()
-            .map(|column| column.type_().clone())
-            .collect::<Vec<_>>();
+        validate_fields(fields, columns)
+    }
+}
 
-        validate_fields(fields, &types)
+/// Helper trait to describe any Postgres type that can be validated against a field
+trait FieldValidate {
+    fn type_(&self) -> &PostgresType;
+    fn name(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl FieldValidate for PostgresType {
+    fn type_(&self) -> &PostgresType {
+        self
+    }
+}
+
+impl FieldValidate for postgres::Column {
+    fn type_(&self) -> &PostgresType {
+        self.type_()
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some(self.name())
+    }
+}
+
+impl FieldValidate for postgres::types::Field {
+    fn type_(&self) -> &PostgresType {
+        self.type_()
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some(self.name())
     }
 }
 
 /// Validate a set of fields against Postgres types
-fn validate_fields<'a>(fields: &[Field<'a>], types: &[PostgresType]) -> io::Result<()> {
-    if fields.len() != types.len() {
+fn validate_fields<'a, T>(fields: &[Field<'a>], comparators: &[T]) -> io::Result<()>
+where
+    T: FieldValidate,
+{
+    if fields.len() != comparators.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "Expected {} fields, but found {}",
                 fields.len(),
-                types.len()
+                comparators.len()
             ),
         ));
     }
 
-    for (field, type_) in fields.iter().zip(types) {
-        field.validate(type_)?;
+    for (field, comparator) in fields.iter().zip(comparators) {
+        field.validate(comparator)?;
     }
 
     Ok(())

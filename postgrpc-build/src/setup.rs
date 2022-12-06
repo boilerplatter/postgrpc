@@ -12,6 +12,7 @@ pub(crate) fn database() {
         )
         .unwrap();
 
+        // create custom genre enums
         client
             .execute(
                 r#"do $$ begin
@@ -34,13 +35,44 @@ pub(crate) fn database() {
             )
             .unwrap();
 
+        // create custom book composite types
+        client
+            .execute(
+                r#"do $$ begin
+                    create type "Book" as (
+                        name text,
+                        genre "Genre"
+                    );
+                exception
+                    when duplicate_object then null;
+                end $$"#,
+                &[],
+            )
+            .unwrap();
+
+        client
+            .execute(
+                r#"do $$ begin
+                    create type "NestedBook" as (
+                        name text,
+                        genre "Genre"
+                    );
+                exception
+                    when duplicate_object then null;
+                end $$"#,
+                &[],
+            )
+            .unwrap();
+
+        // create the test authors table
         client
             .execute(
                 r#"create table if not exists authors (
                     id serial primary key,
                     first_name text not null,
                     last_name text not null,
-                    preferred_genre "Genre" not null
+                    preferred_genre "Genre" not null,
+                    favorite_book "Book" not null
                 )"#,
                 &[],
             )

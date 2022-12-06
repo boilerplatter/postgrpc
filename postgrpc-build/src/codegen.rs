@@ -7,7 +7,7 @@ pub struct Builder {
     pub(crate) build_client: bool,
     pub(crate) proto_path: String,
     #[cfg(feature = "postgres")]
-    connection_string: Option<String>, // FIXME: feature-gate this
+    connection_string: Option<String>,
 }
 
 impl Builder {
@@ -62,7 +62,7 @@ pub fn configure() -> Builder {
     }
 }
 
-/// Simple `.proto` compiling. Use [`configure`] instead oif you need more options.
+/// Simple `.proto` compiling. Use [`configure`] instead if you need more options.
 ///
 /// The `include` directory will be the parent folder of the specified path.
 /// The package name will be the filename without the extension.

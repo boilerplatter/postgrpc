@@ -191,6 +191,18 @@ mod test {
     }
 
     #[test]
+    fn validates_composite_types() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/composites.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn validates_fields_in_order() {
         setup::database();
 
@@ -224,6 +236,18 @@ mod test {
             &["./tests/proto", "./proto"],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn rejects_mismatched_field_names() {
+        setup::database();
+
+        validate(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &["./tests/proto/mismatched_field_name.proto"],
+            &["./tests/proto", "./proto"],
+        )
+        .expect_err("Failed to reject method with mismatched field name");
     }
 
     #[test]
@@ -267,8 +291,8 @@ mod test {
     // TOTEST:
     // validates_imported_descriptors
     // validates_json
-    // validates_custom_types
     // validates_generic_records
     // validates_arrays
     // validates_repeated_fields
+    // validates_well_known_types
 }
