@@ -1,5 +1,8 @@
-use super::service_generator::Generator;
 use std::{io, path::Path};
+
+mod client;
+mod generator;
+mod server;
 
 /// Configuration builder for proto compilation
 #[derive(Debug, Default)]
@@ -47,7 +50,7 @@ impl Builder {
         }
 
         // generate postgRPC Service implementations
-        config.service_generator(Box::new(Generator::new(&self)));
+        config.service_generator(Box::new(generator::Generator::new(&self)));
         config.compile_protos(protos, includes)?;
 
         Ok(())

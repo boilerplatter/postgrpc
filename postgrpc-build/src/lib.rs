@@ -10,11 +10,10 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod codegen;
+mod code_gen;
 #[cfg(feature = "postgres")]
 mod proto;
-mod service_generator;
-#[cfg(test)]
+#[cfg(all(test, feature = "postgres"))]
 mod setup;
 #[cfg(feature = "postgres")]
 mod validator;
@@ -24,4 +23,4 @@ mod annotations {
     include!("../gen/postgrpc.rs");
 }
 
-pub use codegen::{compile_protos, configure, Builder};
+pub use code_gen::{compile_protos, configure, Builder};
