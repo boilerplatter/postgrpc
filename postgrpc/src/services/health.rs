@@ -1,4 +1,4 @@
-use crate::pools::{Connection, Pool};
+use crate::pools::{Connection, Parameter, Pool};
 use futures_util::{pin_mut, stream, StreamExt};
 use std::{hash::Hash, sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
@@ -11,20 +11,22 @@ use tonic_health::proto::{
 pub use tonic_health::proto::{HealthCheckRequest, HealthCheckResponse};
 
 /// Health service implementation that checks the connections associated with each service
-pub struct Health<P>
+pub struct Health<P, R>
 where
-    P: Pool,
+    P: Pool<R>,
     P::Key: Hash + Eq + Default + Clone,
+    R: Send + Sync,
 {
     pool: Arc<P>,
     #[cfg(feature = "transaction")]
-    transactions: crate::pools::transaction::Pool<P>,
+    transactions: crate::pools::transaction::Pool<P, R>,
 }
 
-impl<P> Clone for Health<P>
+impl<P, R> Clone for Health<P, R>
 where
-    P: Pool,
+    P: Pool<R>,
     P::Key: Hash + Eq + Default + Clone,
+    R: Send + Sync,
 {
     fn clone(&self) -> Self {
         Self {
@@ -35,11 +37,12 @@ where
     }
 }
 
-impl<P> Health<P>
+impl<P, R> Health<P, R>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: Hash + Eq + Default + Clone + Send + Sync,
-    <P::Connection as Connection>::Error: Send + Sync,
+    <P::Connection as Connection<R>>::Error: Send + Sync,
+    R: Send + Sync + 'static,
 {
     /// Create a new health service from a connection pool
     #[tracing::instrument(skip(pool))]
@@ -61,7 +64,7 @@ where
 
         // attempt to make a simple query against the pool
         connection
-            .query("SELECT 1", &[])
+            .query::<Parameter>("SELECT 1", &[])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
@@ -88,7 +91,7 @@ where
 
         // attempt to make a simple query against the transaction
         transaction
-            .query("SELECT 1", &[])
+            .query::<Parameter>("SELECT 1", &[])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
@@ -103,11 +106,12 @@ where
 }
 
 #[tonic::async_trait]
-impl<P> GrpcService for Health<P>
+impl<P, R> GrpcService for Health<P, R>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: Hash + Eq + Default + Clone + Send + Sync,
-    <P::Connection as Connection>::Error: Send + Sync,
+    <P::Connection as Connection<R>>::Error: Send + Sync,
+    R: Send + Sync + 'static,
 {
     #[tracing::instrument(
         skip(self, request),
@@ -199,10 +203,11 @@ where
 }
 
 /// Create a new Health service from a connection pool
-pub fn new<P>(pool: Arc<P>) -> HealthServer<Health<P>>
+pub fn new<P, R>(pool: Arc<P>) -> HealthServer<Health<P, R>>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: Hash + Eq + Default + Clone,
+    R: Send + Sync + 'static,
 {
     HealthServer::new(Health::new(pool))
 }

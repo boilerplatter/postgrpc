@@ -2,7 +2,7 @@ use crate::{
     extensions::FromRequest,
     pools::{transaction, Connection, Parameter, Pool},
 };
-use futures_util::{pin_mut, StreamExt, TryStreamExt};
+use futures_util::{pin_mut, StreamExt, TryStream, TryStreamExt};
 use proto::transaction_server::{Transaction as GrpcService, TransactionServer};
 pub use proto::{BeginResponse, CommitRequest, RollbackRequest, TransactionQueryRequest};
 use std::{hash::Hash, sync::Arc};
@@ -18,24 +18,26 @@ mod proto {
 }
 
 /// Type alias representing a bubbled-up error from the transaction pool
-type Error<P> = transaction::Error<<<P as Pool>::Connection as Connection>::Error>;
+type Error<P, R> = transaction::Error<<<P as Pool<R>>::Connection as Connection<R>>::Error>;
 
 /// Protocol-agnostic Transaction handlers for any connection pool
 #[derive(Clone)]
-pub struct Transaction<P>
+pub struct Transaction<P, R>
 where
-    P: Pool,
+    P: Pool<R>,
     P::Key: Hash + Eq + Clone,
+    R: Send + Sync,
 {
-    pool: transaction::Pool<P>,
+    pool: transaction::Pool<P, R>,
 }
 
-impl<P> Transaction<P>
+impl<P, R> Transaction<P, R>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: Hash + Eq + Send + Sync + Clone + 'static,
     P::Connection: 'static,
-    <P::Connection as Connection>::Error: Send + Sync + 'static,
+    <P::Connection as Connection<R>>::Error: Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     /// Create a new Postgres transaction service from a reference-counted Pool
     pub fn new(pool: Arc<P>) -> Self {
@@ -46,7 +48,7 @@ where
 
     /// Begin a Postgres transaction, returning a unique ID for the transaction
     #[tracing::instrument(skip(self), err)]
-    pub async fn begin(&self, key: P::Key) -> Result<Uuid, Error<P>> {
+    pub async fn begin(&self, key: P::Key) -> Result<Uuid, Error<P, R>> {
         tracing::debug!("Beginning transaction");
 
         let transaction_id = self.pool.begin(key).await?;
@@ -62,7 +64,7 @@ where
         key: P::Key,
         statement: &str,
         parameters: &[Parameter],
-    ) -> Result<<P::Connection as Connection>::RowStream, Error<P>> {
+    ) -> Result<<P::Connection as Connection<R>>::RowStream, Error<P, R>> {
         tracing::info!("Querying transaction");
 
         let transaction_key = transaction::Key::new(key, id);
@@ -80,7 +82,7 @@ where
 
     /// Commit an active Postgres transaction by ID and connection pool key
     #[tracing::instrument(skip(self), err)]
-    pub async fn commit(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
+    pub async fn commit(&self, id: Uuid, key: P::Key) -> Result<(), Error<P, R>> {
         tracing::debug!("Committing transaction");
 
         self.pool.commit(id, key).await?;
@@ -90,7 +92,7 @@ where
 
     /// Roll back an active Postgres transaction by ID and connection pool key
     #[tracing::instrument(skip(self), err)]
-    pub async fn rollback(&self, id: Uuid, key: P::Key) -> Result<(), Error<P>> {
+    pub async fn rollback(&self, id: Uuid, key: P::Key) -> Result<(), Error<P, R>> {
         tracing::debug!("Rolling back transaction");
 
         self.pool.rollback(id, key).await?;
@@ -101,10 +103,12 @@ where
 
 /// gRPC service implementation for Transaction service
 #[tonic::async_trait]
-impl<P> GrpcService for Transaction<P>
+impl<P, R> GrpcService for Transaction<P, R>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest + Hash + Eq + Clone,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
+    R: Send + Sync + 'static,
 {
     type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
@@ -216,23 +220,27 @@ where
 }
 
 /// Create a new Transaction service from a connection pool
-pub fn new<P>(pool: Arc<P>) -> TransactionServer<Transaction<P>>
+pub fn new<P, R>(pool: Arc<P>) -> TransactionServer<Transaction<P, R>>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest + Hash + Eq + Clone,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
+    R: Send + Sync + 'static,
 {
     TransactionServer::new(Transaction::new(pool))
 }
 
 /// Create a new Postgres service from a connection pool and an interceptor
-pub fn with_interceptor<P, I>(
+pub fn with_interceptor<P, I, R>(
     pool: Arc<P>,
     interceptor: I,
-) -> InterceptedService<TransactionServer<Transaction<P>>, I>
+) -> InterceptedService<TransactionServer<Transaction<P, R>>, I>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest + Hash + Eq + Clone,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
     I: Interceptor,
+    R: Send + Sync + 'static,
 {
     TransactionServer::with_interceptor(Transaction::new(pool), interceptor)
 }

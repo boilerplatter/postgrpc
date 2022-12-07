@@ -1,5 +1,6 @@
 use futures_util::TryStream;
 use std::fmt;
+use tokio_postgres::types::ToSql;
 use tonic::{async_trait, Status};
 
 #[cfg_attr(doc, doc(cfg(feature = "deadpool")))]
@@ -25,7 +26,8 @@ pub struct Parameter(pbjson_types::Value);
 ///
 /// ```rust
 /// use postgrpc::pools::{Connection, Parameter};
-/// use tonic::{Row, Status};
+/// use tokio_postgres::Row;
+/// use tonic::Status;
 ///
 /// // implementing a real StructStream (a fallible stream of Structs)
 /// // is an exercise left to the reader
@@ -65,20 +67,26 @@ pub struct Parameter(pbjson_types::Value);
 /// ```
 
 #[async_trait]
-pub trait Connection: Send + Sync {
-    /// A fallible stream of rows returned from the database as protobuf structs
-    type RowStream: TryStream<Ok = pbjson_types::Struct, Error = Self::Error> + Send + Sync;
+pub trait Connection<R>
+where
+    Self: Send + Sync,
+    R: Send,
+{
+    /// A fallible stream of generic rows returned from the database
+    type RowStream: TryStream<Ok = R, Error = Self::Error> + Send + Sync;
 
     /// Error type on the connection encompassing top-level errors (i.e. "bad connection") and
     /// errors within a RowStream
     type Error: std::error::Error + Into<Status> + Send + Sync;
 
     /// Run a query parameterized by the Connection's associated Parameter, returning a RowStream
-    async fn query(
+    async fn query<P>(
         &self,
         statement: &str,
-        parameters: &[Parameter],
-    ) -> Result<Self::RowStream, Self::Error>;
+        parameters: &[P],
+    ) -> Result<Self::RowStream, Self::Error>
+    where
+        P: ToSql + Sync;
 
     /// Run a set of SQL statements using the simple query protocol
     async fn batch(&self, query: &str) -> Result<(), Self::Error>;
@@ -154,17 +162,21 @@ pub trait Connection: Send + Sync {
 /// }
 /// ```
 #[async_trait]
-pub trait Pool: Send + Sync {
+pub trait Pool<R>
+where
+    Self: Send + Sync,
+    R: Send,
+{
     /// The key by which connections are selected from the Pool, allowing for custom
     /// connection-fetching logic in Pool implementations
     type Key: fmt::Debug + Send + Sync;
 
     /// The underlying connection type returned from the Pool
-    type Connection: Connection;
+    type Connection: Connection<R>;
 
     /// Errors related to fetching Connections from the Pool
     type Error: std::error::Error
-        + From<<Self::Connection as Connection>::Error>
+        + From<<Self::Connection as Connection<R>>::Error>
         + Into<Status>
         + Send
         + Sync;

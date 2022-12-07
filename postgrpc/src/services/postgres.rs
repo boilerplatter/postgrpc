@@ -2,10 +2,10 @@ use crate::{
     extensions::FromRequest,
     pools::{Connection, Parameter, Pool},
 };
-use futures_util::{pin_mut, StreamExt, TryStreamExt};
+use futures_util::{pin_mut, StreamExt, TryStream, TryStreamExt};
 use proto::postgres_server::{Postgres as GrpcService, PostgresServer};
 pub use proto::QueryRequest;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
@@ -18,17 +18,22 @@ mod proto {
 
 /// Protocol-agnostic Postgres handlers for any connection pool
 #[derive(Clone)]
-pub struct Postgres<P> {
+pub struct Postgres<P, R> {
     pool: Arc<P>,
+    _row_type_marker: PhantomData<R>,
 }
 
-impl<P> Postgres<P>
+impl<P, R> Postgres<P, R>
 where
-    P: Pool,
+    P: Pool<R>,
+    R: Send,
 {
     /// Create a new Postgres service from a reference-counted Pool
     fn new(pool: Arc<P>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            _row_type_marker: PhantomData,
+        }
     }
 
     /// Query a Postgres database, returning a stream of rows
@@ -38,7 +43,7 @@ where
         key: P::Key,
         statement: &str,
         parameters: &[Parameter],
-    ) -> Result<<P::Connection as Connection>::RowStream, P::Error> {
+    ) -> Result<<P::Connection as Connection<R>>::RowStream, P::Error> {
         tracing::info!("Querying postgres");
 
         let rows = self
@@ -54,10 +59,12 @@ where
 
 /// gRPC service implementation for Postgres service using the default pool
 #[tonic::async_trait]
-impl<P> GrpcService for Postgres<P>
+impl<P, R> GrpcService for Postgres<P, R>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
+    R: Send + Sync + 'static,
 {
     type QueryStream = ReceiverStream<Result<pbjson_types::Struct, Status>>;
 
@@ -74,7 +81,6 @@ where
 
         // convert values to valid parameters
         let value_count = values.len();
-
         let parameters: Vec<_> = values.into_iter().map(Parameter::from).collect();
 
         if parameters.len() < value_count {
@@ -111,23 +117,27 @@ where
 }
 
 /// Create a new Postgres service from a connection pool
-pub fn new<P>(pool: Arc<P>) -> PostgresServer<Postgres<P>>
+pub fn new<P, R>(pool: Arc<P>) -> PostgresServer<Postgres<P, R>>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
+    R: Send + Sync + 'static,
 {
     PostgresServer::new(Postgres::new(pool))
 }
 
 /// Create a new Postgres service from a connection pool and an interceptor
-pub fn with_interceptor<P, I>(
+pub fn with_interceptor<P, I, R>(
     pool: Arc<P>,
     interceptor: I,
-) -> InterceptedService<PostgresServer<Postgres<P>>, I>
+) -> InterceptedService<PostgresServer<Postgres<P, R>>, I>
 where
-    P: Pool + 'static,
+    P: Pool<R> + 'static,
     P::Key: FromRequest,
+    <<P::Connection as Connection<R>>::RowStream as TryStream>::Ok: Into<pbjson_types::Struct>,
     I: Interceptor,
+    R: Send + Sync + 'static,
 {
     PostgresServer::with_interceptor(Postgres::new(pool), interceptor)
 }

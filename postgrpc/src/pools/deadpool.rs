@@ -3,12 +3,13 @@
 //! When used in conjunction with the `role-header` feature and interceptor,
 //! this pool runs `SET ROLE` on each connection for the `ROLE` specified in the
 //! `X-Postgres-Role` header (assuming it exists).
-use super::{Connection, Parameter};
+use super::Connection;
 use deadpool_postgres::{
     tokio_postgres::{error::SqlState, RowStream, Statement},
     ManagerConfig, PoolConfig,
 };
 use futures_util::{ready, Stream};
+use pbjson_types::Struct;
 use pin_project_lite::pin_project;
 use serde::{Deserialize, Deserializer};
 use std::{
@@ -17,6 +18,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
+use tokio_postgres::{types::ToSql, Row};
 use tonic::{async_trait, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
@@ -76,13 +78,13 @@ pub struct Pool {
 }
 
 #[async_trait]
-impl super::Pool for Pool {
+impl super::Pool<Struct> for Pool {
     #[cfg(feature = "role-header")]
     type Key = crate::extensions::role_header::Role;
     #[cfg(not(feature = "role-header"))]
     type Key = ();
     type Connection = Client;
-    type Error = <Self::Connection as Connection>::Error;
+    type Error = <Self::Connection as Connection<Struct>>::Error;
 
     #[tracing::instrument(skip(self))]
     async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
@@ -118,8 +120,52 @@ impl super::Pool for Pool {
     }
 }
 
+#[async_trait]
+impl super::Pool<Row> for Pool {
+    #[cfg(feature = "role-header")]
+    type Key = crate::extensions::role_header::Role;
+    #[cfg(not(feature = "role-header"))]
+    type Key = ();
+    type Connection = Client;
+    type Error = <Self::Connection as Connection<Row>>::Error;
+
+    #[tracing::instrument(skip(self))]
+    async fn get_connection(&self, key: Self::Key) -> Result<Self::Connection, Self::Error> {
+        // FIXME: share this logic across pool implementations
+        tracing::trace!("Fetching connection from the pool");
+
+        let client = self.pool.get().await?;
+
+        #[cfg(feature = "role-header")]
+        {
+            // configure the connection's ROLE
+            let local_role_statement = match key {
+                Some(role) => format!(r#"SET ROLE "{}""#, role),
+                None => "RESET ROLE".to_string(),
+            };
+
+            client
+                .batch_execute(&local_role_statement)
+                .await
+                .map_err(Error::Role)?;
+        }
+
+        // set the statement_timeout for the session
+        if let Some(statement_timeout) = self.statement_timeout {
+            client
+                .batch_execute(&format!(
+                    "SET statement_timeout={}",
+                    statement_timeout.as_millis()
+                ))
+                .await?;
+        }
+
+        Ok(Client { client })
+    }
+}
+
 pin_project! {
-    /// The stream of gRPC-compatible rows returned by this pool's [`Client`].
+    /// The stream of gRPC-compatible JSON rows returned by this pool's [`Client`].
     pub struct StructStream {
         #[pin]
         rows: RowStream,
@@ -157,16 +203,19 @@ pub struct Client {
 }
 
 #[async_trait]
-impl Connection for Client {
-    type Error = Error;
+impl Connection<Struct> for Client {
     type RowStream = StructStream;
+    type Error = Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query(
+    async fn query<P>(
         &self,
         statement: &str,
-        parameters: &[Parameter],
-    ) -> Result<Self::RowStream, Self::Error> {
+        parameters: &[P],
+    ) -> Result<Self::RowStream, Self::Error>
+    where
+        P: ToSql + Sync,
+    {
         tracing::trace!("Querying Connection");
 
         // prepare the statement using the statement cache
@@ -182,7 +231,7 @@ impl Connection for Client {
             });
         }
 
-        let rows = match query_raw(self, statement, &prepared_statement, parameters).await {
+        let rows = match query_raw_json(self, statement, &prepared_statement, parameters).await {
             // retry the query if the schema changed underneath the prepared statement cache
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
@@ -191,7 +240,7 @@ impl Connection for Client {
                     .statement_cache
                     .remove(statement, inferred_types);
 
-                query_raw(self, statement, &prepared_statement, parameters).await
+                query_raw_json(self, statement, &prepared_statement, parameters).await
             }
             result => result,
         }?;
@@ -209,13 +258,102 @@ impl Connection for Client {
     }
 }
 
-/// Wrapper around a raw query that can be retried
-async fn query_raw(
+pin_project! {
+    /// The stream of raw rows returned by this pool's [`Client`].
+    pub struct RawStream {
+        #[pin]
+        rows: RowStream,
+    }
+}
+
+impl Stream for RawStream {
+    type Item = Result<Row, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        match ready!(this.rows.poll_next(context)?) {
+            Some(row) => Poll::Ready(Some(Ok(row))),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+impl From<RowStream> for RawStream {
+    fn from(rows: RowStream) -> Self {
+        Self { rows }
+    }
+}
+
+#[async_trait]
+impl Connection<Row> for Client {
+    type RowStream = RawStream;
+    type Error = Error;
+
+    #[tracing::instrument(skip(self, parameters))]
+    async fn query<P>(
+        &self,
+        statement: &str,
+        parameters: &[P],
+    ) -> Result<Self::RowStream, Self::Error>
+    where
+        P: ToSql + Sync,
+    {
+        tracing::trace!("Querying TypedConnection");
+
+        // prepare the statement using the statement cache
+        let prepared_statement = self.client.prepare_cached(statement).await?;
+
+        // check parameter count to avoid panics
+        let inferred_types = prepared_statement.params();
+
+        // FIXME: avoid the Clone requirement on parameters
+        let parameter_count = parameters.len();
+
+        if inferred_types.len() != parameter_count {
+            return Err(Error::Params {
+                expected: inferred_types.len(),
+                actual: parameter_count,
+            });
+        }
+
+        let rows = match self.client.query_raw(&prepared_statement, parameters).await {
+            // retry the query if the schema changed underneath the prepared statement cache
+            Err(error) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
+                tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
+
+                self.client
+                    .statement_cache
+                    .remove(statement, inferred_types);
+
+                self.client.query_raw(&prepared_statement, parameters).await
+            }
+            result => result,
+        }?;
+
+        Ok(RawStream::from(rows))
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn batch(&self, query: &str) -> Result<(), Self::Error> {
+        tracing::trace!("Executing batch query on Connection");
+
+        self.client.batch_execute(query).await?;
+
+        Ok(())
+    }
+}
+
+/// Wrapper around a raw JSON query that can be retried
+async fn query_raw_json<P>(
     client: &Client,
     statement: &str,
     prepared_statement: &Statement,
-    parameters: &[Parameter],
-) -> Result<RowStream, Error> {
+    parameters: &[P],
+) -> Result<RowStream, Error>
+where
+    P: ToSql + Sync,
+{
     let rows = if prepared_statement.columns().is_empty() {
         // execute statements that return no data without modification
         client

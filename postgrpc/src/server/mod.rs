@@ -1,4 +1,5 @@
 use configuration::Configuration;
+use pbjson_types::Struct;
 use postgrpc::{pools::deadpool, services};
 use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
@@ -66,28 +67,17 @@ pub(crate) async fn run() -> Result<(), Error> {
     let interceptor = |request| Ok(request);
 
     // set up the server with configured services
-    let postgres_service = services::postgres::with_interceptor(Arc::clone(&pool), interceptor);
+    let postgres_service =
+        services::postgres::with_interceptor::<_, _, Struct>(Arc::clone(&pool), interceptor);
 
     tracing::info!(%address, "PostgRPC service starting");
 
-    #[allow(unused_mut)]
-    let mut server = Server::builder();
+    // FIXME: handle tonic-web again
+    // see issue https://github.com/hyperium/tonic/issues/1177
 
-    #[cfg(feature = "web")]
-    {
-        server = server.accept_http1(true);
-    }
-
-    let mut router = server.layer(logging::create()).add_service({
-        #[cfg(feature = "web")]
-        {
-            tonic_web::enable(postgres_service)
-        }
-        #[cfg(not(feature = "web"))]
-        {
-            postgres_service
-        }
-    });
+    let mut router = Server::builder()
+        .layer(logging::create())
+        .add_service(postgres_service);
 
     #[cfg(feature = "reflection")]
     {
@@ -108,33 +98,17 @@ pub(crate) async fn run() -> Result<(), Error> {
     #[cfg(feature = "health")]
     #[allow(clippy::unnecessary_operation)]
     {
-        let health_service = services::health::new(Arc::clone(&pool));
-        router = router.add_service({
-            #[cfg(feature = "web")]
-            {
-                tonic_web::enable(health_service)
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                health_service
-            }
-        })
+        let health_service = services::health::new::<_, Struct>(Arc::clone(&pool));
+        router = router.add_service(health_service)
     };
 
     #[cfg(feature = "transaction")]
     #[allow(clippy::unnecessary_operation)]
     {
-        let transaction_service = services::transaction::with_interceptor(pool, interceptor);
-        router = router.add_service({
-            #[cfg(feature = "web")]
-            {
-                tonic_web::enable(transaction_service)
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                transaction_service
-            }
-        });
+        let transaction_service =
+            services::transaction::with_interceptor::<_, _, Struct>(pool, interceptor);
+
+        router = router.add_service(transaction_service);
     }
 
     router.serve_with_shutdown(address, shutdown).await?;

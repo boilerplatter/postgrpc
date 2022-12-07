@@ -1,15 +1,18 @@
 //! A database transaction meta-pool. This pool handles auto-vaccuming of
 //! inactive transactions at configurable thresholds.
 
-use super::{Connection, Parameter};
+use super::Connection;
+use futures_util::TryStream;
 use std::{
     collections::HashMap,
     hash::Hash,
+    marker::PhantomData,
     sync::Arc,
     time::{Duration, Instant},
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio_postgres::types::ToSql;
 use tonic::{async_trait, Status};
 use tracing::Instrument;
 use uuid::Uuid;
@@ -66,18 +69,21 @@ const TRANSACTION_LIFETIME_LIMIT_SECONDS: u64 = 30 * 60;
 // FIXME: add a concurrent transaction limit by key
 
 /// Cached transaction data for an individual active transaction
-pub struct Transaction<C>
+pub struct Transaction<C, R>
 where
-    C: Connection,
+    C: Connection<R>,
+    R: Send,
 {
     connection: Arc<C>,
     created_at: Instant,
     last_used_at: Arc<RwLock<Instant>>,
+    _row_type_marker: PhantomData<R>,
 }
 
-impl<C> Transaction<C>
+impl<C, R> Transaction<C, R>
 where
-    C: Connection,
+    C: Connection<R>,
+    R: Send,
 {
     fn new(connection: Arc<C>) -> Self {
         let now = Instant::now();
@@ -86,37 +92,44 @@ where
             connection,
             created_at: now,
             last_used_at: Arc::new(RwLock::new(now)),
+            _row_type_marker: PhantomData,
         }
     }
 }
 
-impl<C> Clone for Transaction<C>
+impl<C, R> Clone for Transaction<C, R>
 where
-    C: Connection,
+    C: Connection<R>,
+    R: Send,
 {
     fn clone(&self) -> Self {
         Self {
             connection: Arc::clone(&self.connection),
             created_at: self.created_at,
             last_used_at: Arc::clone(&self.last_used_at),
+            _row_type_marker: self._row_type_marker,
         }
     }
 }
 
 #[async_trait]
-impl<C> Connection for Transaction<C>
+impl<C, R> Connection<<C::RowStream as TryStream>::Ok> for Transaction<C, R>
 where
-    C: Connection + Send + Sync + 'static,
+    C: Connection<R> + Send + Sync + 'static,
+    R: Send + Sync,
 {
-    type Error = C::Error;
     type RowStream = C::RowStream;
+    type Error = C::Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query(
+    async fn query<P>(
         &self,
         statement: &str,
-        parameters: &[Parameter],
-    ) -> Result<Self::RowStream, Self::Error> {
+        parameters: &[P],
+    ) -> Result<Self::RowStream, Self::Error>
+    where
+        P: ToSql + Sync,
+    {
         tracing::trace!("Querying transaction Connection");
         let rows = self.connection.query(statement, parameters).await?;
         let mut last_used_at = self.last_used_at.write().await;
@@ -159,22 +172,25 @@ where
 }
 
 /// Type alias for the internal map of shared transactions
-type TransactionMap<K, C> = HashMap<Key<K>, Transaction<C>>;
+type TransactionMap<K, C, R> = HashMap<Key<K>, Transaction<C, R>>;
 
 /// Pool of active transactions that wraps a lower-level Pool implementation
-pub struct Pool<P>
+pub struct Pool<P, R>
 where
-    P: super::Pool,
+    P: super::Pool<R>,
     P::Key: Hash + Eq + Clone,
+    R: Send + Sync,
 {
     pool: Arc<P>,
-    transactions: Arc<RwLock<TransactionMap<P::Key, P::Connection>>>,
+    #[allow(clippy::type_complexity)]
+    transactions: Arc<RwLock<TransactionMap<P::Key, P::Connection, R>>>,
 }
 
-impl<P> Clone for Pool<P>
+impl<P, R> Clone for Pool<P, R>
 where
-    P: super::Pool,
+    P: super::Pool<R>,
     P::Key: Hash + Eq + Clone,
+    R: Send + Sync,
 {
     fn clone(&self) -> Self {
         Self {
@@ -184,12 +200,13 @@ where
     }
 }
 
-impl<P> Pool<P>
+impl<P, R> Pool<P, R>
 where
-    P: super::Pool + 'static,
+    P: super::Pool<R> + 'static,
     P::Key: Hash + Eq + Send + Sync + Clone + 'static,
     P::Connection: 'static,
-    <P::Connection as Connection>::Error: Send + Sync + 'static,
+    <P::Connection as Connection<R>>::Error: Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     /// Initialize a new shared transaction pool
     #[tracing::instrument(skip(pool))]
@@ -253,7 +270,7 @@ where
     pub async fn begin(
         &self,
         key: P::Key,
-    ) -> Result<Uuid, Error<<P::Connection as Connection>::Error>> {
+    ) -> Result<Uuid, Error<<P::Connection as Connection<R>>::Error>> {
         // generate a unique transaction ID to be included in subsequent requests
         let transaction_id = Uuid::new_v4();
 
@@ -293,7 +310,7 @@ where
         &self,
         transaction_id: Uuid,
         key: P::Key,
-    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
+    ) -> Result<(), Error<<P::Connection as Connection<R>>::Error>> {
         tracing::trace!("Committing active transaction");
 
         self.remove(transaction_id, key)
@@ -312,7 +329,7 @@ where
         &self,
         transaction_id: Uuid,
         key: P::Key,
-    ) -> Result<(), Error<<P::Connection as Connection>::Error>> {
+    ) -> Result<(), Error<<P::Connection as Connection<R>>::Error>> {
         tracing::trace!("Rolling back active transaction");
 
         self.remove(transaction_id, key)
@@ -325,12 +342,13 @@ where
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     #[tracing::instrument(skip(self))]
     async fn remove(
         &self,
         transaction_id: Uuid,
         key: P::Key,
-    ) -> Result<Transaction<P::Connection>, Error<<P::Connection as Connection>::Error>> {
+    ) -> Result<Transaction<P::Connection, R>, Error<<P::Connection as Connection<R>>::Error>> {
         tracing::trace!("Removing transaction from the cache");
 
         let transaction = self
@@ -348,16 +366,17 @@ where
 }
 
 #[async_trait]
-impl<P> super::Pool for Pool<P>
+impl<P, R> super::Pool<R> for Pool<P, R>
 where
-    P: super::Pool,
+    P: super::Pool<R>,
     P::Key: Hash + Eq + Send + Sync + Clone,
     P::Connection: 'static,
-    <P::Connection as Connection>::Error: Send + Sync + Into<Status> + 'static,
+    <P::Connection as Connection<R>>::Error: Send + Sync + Into<Status> + 'static,
+    R: Send + Sync + 'static,
 {
     type Key = Key<P::Key>;
-    type Connection = Transaction<P::Connection>;
-    type Error = Error<<Self::Connection as Connection>::Error>;
+    type Connection = Transaction<P::Connection, R>;
+    type Error = Error<<Self::Connection as Connection<R>>::Error>;
 
     #[tracing::instrument(
         skip(self, key),
