@@ -1,79 +1,12 @@
-use crate::proto::Method;
+use crate::proto::Services;
 use prost::Message;
-use prost_types::FileDescriptorSet;
-use std::{collections::HashMap, io, path::Path};
+use std::{io, path::Path};
 
-/// [`prost`]-based Proto types parsed from a [`prost_types::FileDescriptorSet`]
-#[ouroboros::self_referencing]
-pub(crate) struct Protos {
-    file_descriptor_set: FileDescriptorSet,
-    #[covariant]
-    #[borrows(file_descriptor_set)]
-    pub(crate) services: HashMap<String, io::Result<HashMap<String, Method<'this>>>>,
-}
-
-impl Protos {
-    pub(crate) fn from_file_descriptor_set(
-        file_descriptor_set: FileDescriptorSet,
-    ) -> io::Result<Self> {
-        let protos = ProtosBuilder {
-            file_descriptor_set,
-            services_builder: |file_descriptor_set: &FileDescriptorSet| {
-                let mut services = HashMap::new();
-
-                for file in &file_descriptor_set.file {
-                    let package = file.package();
-
-                    // group all messages across the file by full message path + name
-                    let messages = file
-                        .message_type
-                        .iter()
-                        .map(|message| (format!(".{package}.{}", message.name()), message))
-                        .collect();
-
-                    // group all enums across files by full enum path + name
-                    let enums = file
-                        .enum_type
-                        .iter()
-                        .map(|enum_type| (format!(".{package}.{}", enum_type.name()), enum_type))
-                        .collect();
-
-                    // group the services across files by full service path + name
-                    // FIXME: use iterators + collect()
-                    for service in file.service.iter() {
-                        // extract the postgrpc-annotated methods
-                        let methods = service
-                            .method
-                            .iter()
-                            .filter_map(|method| {
-                                super::proto::Method::from_method_descriptor(
-                                    method, &messages, &enums,
-                                )
-                                .map(|method| {
-                                    method.map(|method| (method.name().to_owned(), method))
-                                })
-                                .transpose()
-                            })
-                            .collect::<Result<_, _>>();
-
-                        services.insert(format!(".{package}.{}", service.name()), methods);
-                    }
-                }
-
-                services
-            },
-        }
-        .build();
-
-        Ok(protos)
-    }
-}
-
-/// Compile protos with the external `protoc` compiler
-pub(crate) fn compile_protos(
+/// Compile service protos with the external `protoc` compiler
+pub(crate) fn compile_services(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
-) -> io::Result<Protos> {
+) -> io::Result<Services> {
     let tmp = tempfile::Builder::new().prefix("prost-build").tempdir()?;
     let file_descriptor_set_path = tmp.path().join("prost-descriptor-set");
 
@@ -131,5 +64,5 @@ pub(crate) fn compile_protos(
                 format!("invalid FileDescriptorSet: {error}"),
             )
         })
-        .and_then(Protos::from_file_descriptor_set)
+        .and_then(Services::from_file_descriptor_set)
 }

@@ -1,19 +1,20 @@
-use crate::protoc::Protos;
+use crate::proto::Services;
 use std::io;
 
-/// Validate a set of `postgrpc`-annotated protos against a database
-pub(crate) fn validate_protos(connection_string: &str, protos: &Protos) -> io::Result<()> {
+/// Validate a set of `postgrpc`-annotated Services against a database
+pub(crate) fn validate_services(connection_string: &str, services: &Services) -> io::Result<()> {
     // set up the postgres client for validation
     let mut client = postgres::Client::connect(connection_string, postgres::NoTls) // FIXME: conditionally enable TLS
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
     // validate the inputs and outputs of each postgrpc-annotated method
-    for methods in protos.borrow_services().values() {
-        for method in methods
+    for service in services {
+        let methods = service
             .as_ref()
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
-            .values()
-        {
+            .methods();
+
+        for method in methods {
             // FIXME: use proper logging
             println!("Validating rpc {} against the database", method.name());
 
@@ -35,16 +36,16 @@ pub(crate) fn validate_protos(connection_string: &str, protos: &Protos) -> io::R
 
 #[cfg(test)]
 mod test {
-    use super::validate_protos;
-    use crate::{protoc::compile_protos, setup};
+    use super::validate_services;
+    use crate::{protoc::compile_services, setup};
     use std::path::Path;
 
     fn validate(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]) -> std::io::Result<()> {
-        let protos = compile_protos(protos, includes)?;
+        let services = compile_services(protos, includes)?;
 
-        validate_protos(
+        validate_services(
             "postgresql://postgres:supersecretpassword@localhost:5432",
-            &protos,
+            &services,
         )
     }
 

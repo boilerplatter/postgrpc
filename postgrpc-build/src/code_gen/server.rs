@@ -1,14 +1,13 @@
-use crate::proto::Method;
+use crate::proto::Service as ProtoService;
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::collections::HashMap;
 use tonic_build::{CodeGenBuilder, Method as _, Service};
 
 /// Generate a postgRPC Service implementation for use with the `tonic` + `tower` ecosystem
 // FIXME: encapsulate the concept of a postgRPC-specific service that can be derived from a Service
 pub(crate) fn generate<'a, S>(
-    service: &S,
-    methods: &HashMap<String, Method<'a>>,
+    service: &S, // FIXME: derive ProtoService from a service (or at least impl Service)
+    proto_service: &ProtoService<'a>,
     proto_path: &str,
 ) -> TokenStream
 where
@@ -22,7 +21,7 @@ where
     let server_service = quote::format_ident!("{}Server", service.name());
     let server_trait = quote::format_ident!("{}", service.name());
     let server_mod = quote::format_ident!("{}_server", naive_snake_case(service.name()));
-    let methods = generate_methods(service, methods, proto_path);
+    let methods = generate_methods(service, proto_service, proto_path);
 
     // FIXME: make sure that dependencies are properly resolved here!
     // we should namespace these in a "codegen" module in postgrpc_lib
@@ -124,7 +123,7 @@ where
 /// generate tonic-compatible service methods
 fn generate_methods<'a, S>(
     service: &S,
-    methods: &HashMap<String, Method<'a>>,
+    proto_service: &ProtoService<'a>,
     proto_path: &str,
 ) -> TokenStream
 where
@@ -136,8 +135,8 @@ where
         let name = method.name();
 
         // FIXME: handle the missing annotation case either gracefully or completely or both
-        let proto_method = methods
-            .get(name)
+        let proto_method = proto_service
+            .get_method(name)
             .unwrap_or_else(|| panic!("Expected method {name}, but it doesn't exist"));
 
         let query = proto_method.query();

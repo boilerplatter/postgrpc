@@ -1,5 +1,5 @@
 use super::{server, Builder};
-use crate::protoc::Protos;
+use crate::proto::Services;
 use proc_macro2::TokenStream;
 use tonic_build::CodeGenBuilder;
 
@@ -10,17 +10,17 @@ pub(crate) struct Generator {
     proto_path: String,
     clients: TokenStream,
     servers: TokenStream,
-    protos: Protos,
+    services: Services,
 }
 
 impl Generator {
-    pub(crate) fn new(builder: &Builder, protos: Protos) -> Self {
+    pub(crate) fn new(builder: &Builder, services: Services) -> Self {
         Self {
             build_client: builder.build_client,
             proto_path: builder.proto_path.to_owned(),
             clients: TokenStream::default(),
             servers: TokenStream::default(),
-            protos,
+            services,
         }
     }
 }
@@ -28,12 +28,10 @@ impl Generator {
 impl prost_build::ServiceGenerator for Generator {
     fn generate(&mut self, service: prost_build::Service, _buffer: &mut String) {
         let proto_service = self
-            .protos
-            .borrow_services()
-            .get(&format!(".{}.{}", service.package, service.name))
-            .expect("Service not found in the file descriptor set")
-            .as_ref()
-            .unwrap();
+            .services
+            .try_get(&format!(".{}.{}", service.package, service.name))
+            .expect("Error resolving service module")
+            .expect("Service not found in the file descriptor set");
 
         let server = server::generate(&service, proto_service, &self.proto_path);
 
@@ -86,7 +84,7 @@ impl prost_build::ServiceGenerator for Generator {
 mod test {
     use super::Generator;
     use crate::annotations::{Query, QUERY};
-    use crate::{code_gen::Builder, protoc::Protos};
+    use crate::{code_gen::Builder, proto::Services};
     use once_cell::sync::Lazy;
     use prost::ExtensionSet;
     use prost_build::{Comments, Method, Service, ServiceGenerator};
@@ -137,8 +135,8 @@ mod test {
     });
 
     // FIXME: add useful configuration options
-    fn generate_test_service() -> (Service, Protos) {
-        let protos = Protos::from_file_descriptor_set(FILE_DESCRIPTOR_SET.clone()).unwrap();
+    fn generate_test_service() -> (Service, Services) {
+        let services = Services::from_file_descriptor_set(FILE_DESCRIPTOR_SET.clone()).unwrap();
 
         let comments = Comments {
             leading_detached: Vec::new(),
@@ -182,7 +180,7 @@ mod test {
                 comments,
                 methods,
             },
-            protos,
+            services,
         )
     }
 
