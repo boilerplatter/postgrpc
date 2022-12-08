@@ -57,6 +57,7 @@ impl<'a, 'b> Method<'a> {
                 }) => {
                     let query = match source {
                         annotations::query::Source::Sql(sql) => sql.to_owned(),
+                        // FIXME: give better file-not-found errors for these!
                         annotations::query::Source::File(path) => fs::read_to_string(path)?,
                     };
 

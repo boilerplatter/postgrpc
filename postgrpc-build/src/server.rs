@@ -132,11 +132,12 @@ where
 
     for method in service.methods() {
         let name = method.name();
+        let identifier = method.identifier();
 
         // FIXME: handle the missing annotation case either gracefully or completely or both
         let proto_method = proto_service
-            .get_method(name)
-            .unwrap_or_else(|| panic!("Expected method {name}, but it doesn't exist"));
+            .get_method(identifier)
+            .unwrap_or_else(|| panic!("Expected method {identifier}, but it doesn't exist"));
 
         let query = proto_method.query();
 
@@ -153,21 +154,24 @@ where
             let output_type = proto_method.output_type();
 
             // convert columns into valid output type fields
+            #[allow(clippy::if_same_then_else)]
             let row_conversion = if output_type.name() == ".google.protobuf.Empty" {
                 quote! { () }
             } else {
-                let fields = proto_method.output_type().fields().map(|field| {
-                    let name = field.name();
+                // FIXME: this is wrong! collect the row conversion to the target message type
+                quote! { () }
+                // let fields = proto_method.output_type().fields().map(|field| {
+                //     let name = field.name();
 
-                    // FIXME: make this fallible! panic-ing at runtime is probably incorrect
-                    quote! { #name: row.get("#name") }
-                });
+                //     // FIXME: make this fallible! panic-ing at runtime is probably incorrect
+                //     quote! { #name: row.get(#name) }
+                // });
 
-                quote! {
-                    #response {
-                        #(#fields),*
-                    }
-                }
+                // quote! {
+                //     #response {
+                //         #(#fields),*
+                //     }
+                // }
             };
 
             let method = quote! {

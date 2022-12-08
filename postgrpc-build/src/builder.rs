@@ -1,17 +1,86 @@
-use super::{server, Builder};
-use crate::proto::Services;
+use super::{proto::Services, protoc, server, validator::validate_services};
 use proc_macro2::TokenStream;
+use std::{io, path::Path};
+
+/// Configuration builder for proto compilation
+#[derive(Debug, Default)]
+pub struct Builder {
+    proto_path: String,
+    #[cfg(feature = "postgres")]
+    connection_string: Option<String>,
+}
+
+impl Builder {
+    #[cfg(feature = "postgres")]
+    /// Provide a database connection string for type validation
+    pub fn validate_with(mut self, connection_string: String) -> Self {
+        self.connection_string = Some(connection_string);
+        self
+    }
+
+    /// compile a set of protos and includes with the default build configuration
+    pub fn compile(
+        self,
+        protos: &[impl AsRef<Path>],
+        includes: &[impl AsRef<Path>],
+    ) -> io::Result<()> {
+        self.compile_with_config(prost_build::Config::new(), protos, includes)
+    }
+
+    /// compile protos using a [`prost_build::Config`]
+    pub fn compile_with_config(
+        self,
+        mut config: prost_build::Config,
+        protos: &[impl AsRef<Path>],
+        includes: &[impl AsRef<Path>],
+    ) -> io::Result<()> {
+        let services = protoc::compile_services(protos, includes)?;
+
+        #[cfg(feature = "postgres")]
+        // validate Service methods against the database if there's a connection string
+        if let Some(ref connection_string) = self.connection_string {
+            validate_services(connection_string, &services)?;
+        }
+
+        // generate postgRPC Service implementations
+        config.service_generator(Box::new(ServiceGenerator::new(&self, services)));
+        config.compile_protos(protos, includes)?;
+
+        Ok(())
+    }
+}
+
+/// Configure `postgrpc-build` code generation.
+pub fn configure() -> Builder {
+    Builder {
+        proto_path: "super".to_owned(),
+        ..Default::default()
+    }
+}
+
+/// Simple `.proto` compiling. Use [`configure`] instead if you need more options.
+///
+/// The `include` directory will be the parent folder of the specified path.
+/// The package name will be the filename without the extension.
+pub fn compile_protos(proto: impl AsRef<Path>) -> io::Result<()> {
+    let proto_path: &Path = proto.as_ref();
+    let proto_directory = proto_path.parent().ok_or(io::ErrorKind::NotFound)?;
+
+    self::configure().compile(&[proto_path], &[proto_directory])?;
+
+    Ok(())
+}
 
 /// Custom Prost-compatible service generator for implemtning gRPC service implemntations for
 /// modules with postgrpc-annotated methods
-pub(crate) struct Generator {
+struct ServiceGenerator {
     proto_path: String,
     servers: TokenStream,
     services: Services,
 }
 
-impl Generator {
-    pub(crate) fn new(builder: &Builder, services: Services) -> Self {
+impl ServiceGenerator {
+    fn new(builder: &Builder, services: Services) -> Self {
         Self {
             proto_path: builder.proto_path.to_owned(),
             servers: TokenStream::default(),
@@ -20,7 +89,7 @@ impl Generator {
     }
 }
 
-impl prost_build::ServiceGenerator for Generator {
+impl prost_build::ServiceGenerator for ServiceGenerator {
     fn generate(&mut self, service: prost_build::Service, _buffer: &mut String) {
         let proto_service = self
             .services
@@ -41,6 +110,8 @@ impl prost_build::ServiceGenerator for Generator {
                 #servers
             };
 
+            println!("{server_service:#}");
+
             let ast: syn::File = syn::parse2(server_service).expect("not a valid tokenstream");
             let code = prettyplease::unparse(&ast);
             buffer.push_str(&code);
@@ -57,12 +128,14 @@ impl prost_build::ServiceGenerator for Generator {
 
 #[cfg(test)]
 mod test {
-    use super::Generator;
-    use crate::annotations::{Query, QUERY};
-    use crate::{code_gen::Builder, proto::Services};
+    use super::{Builder, ServiceGenerator};
+    use crate::{
+        annotations::{Query, QUERY},
+        proto::Services,
+    };
     use once_cell::sync::Lazy;
     use prost::ExtensionSet;
-    use prost_build::{Comments, Method, Service, ServiceGenerator};
+    use prost_build::{Comments, Method, Service, ServiceGenerator as _};
     use prost_types::{
         FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto, MethodOptions,
         ServiceDescriptorProto, ServiceOptions,
@@ -164,7 +237,7 @@ mod test {
         // generate the default test service
         let (service, protos) = generate_test_service();
         let builder = Builder::default();
-        let mut generator = Generator::new(&builder, protos);
+        let mut generator = ServiceGenerator::new(&builder, protos);
         generator.generate(service, &mut String::new());
 
         // assert that the service implementations were generated
@@ -177,7 +250,7 @@ mod test {
         let (service, protos) = generate_test_service();
         let mut output = String::new();
         let builder = Builder::default();
-        let mut generator = Generator::new(&builder, protos);
+        let mut generator = ServiceGenerator::new(&builder, protos);
 
         // generate the prettified output
         generator.generate(service, &mut output);
