@@ -4,9 +4,8 @@ use quote::quote;
 use tonic_build::{CodeGenBuilder, Method as _, Service};
 
 /// Generate a postgRPC Service implementation for use with the `tonic` + `tower` ecosystem
-// FIXME: encapsulate the concept of a postgRPC-specific service that can be derived from a Service
 pub(crate) fn generate<'a, S>(
-    service: &S, // FIXME: derive ProtoService from a service (or at least impl Service)
+    service: &S,
     proto_service: &ProtoService<'a>,
     proto_path: &str,
 ) -> TokenStream

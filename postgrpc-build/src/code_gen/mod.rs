@@ -1,26 +1,19 @@
 use super::{protoc, validator::validate_services};
+use generator::Generator;
 use std::{io, path::Path};
 
-mod client;
 mod generator;
 mod server;
 
 /// Configuration builder for proto compilation
 #[derive(Debug, Default)]
 pub struct Builder {
-    pub(crate) build_client: bool,
-    pub(crate) proto_path: String,
+    proto_path: String,
     #[cfg(feature = "postgres")]
     connection_string: Option<String>,
 }
 
 impl Builder {
-    /// Enable or disable gRPC client code generation.
-    pub fn build_client(mut self, enable: bool) -> Self {
-        self.build_client = enable;
-        self
-    }
-
     #[cfg(feature = "postgres")]
     /// Provide a database connection string for type validation
     pub fn validate_with(mut self, connection_string: String) -> Self {
@@ -53,8 +46,7 @@ impl Builder {
         }
 
         // generate postgRPC Service implementations
-        config.service_generator(Box::new(generator::Generator::new(&self, services)));
-
+        config.service_generator(Box::new(Generator::new(&self, services)));
         config.compile_protos(protos, includes)?;
 
         Ok(())

@@ -1,14 +1,11 @@
 use super::{server, Builder};
 use crate::proto::Services;
 use proc_macro2::TokenStream;
-use tonic_build::CodeGenBuilder;
 
 /// Custom Prost-compatible service generator for implemtning gRPC service implemntations for
 /// modules with postgrpc-annotated methods
 pub(crate) struct Generator {
-    build_client: bool,
     proto_path: String,
-    clients: TokenStream,
     servers: TokenStream,
     services: Services,
 }
@@ -16,9 +13,7 @@ pub(crate) struct Generator {
 impl Generator {
     pub(crate) fn new(builder: &Builder, services: Services) -> Self {
         Self {
-            build_client: builder.build_client,
             proto_path: builder.proto_path.to_owned(),
-            clients: TokenStream::default(),
             servers: TokenStream::default(),
             services,
         }
@@ -36,29 +31,9 @@ impl prost_build::ServiceGenerator for Generator {
         let server = server::generate(&service, proto_service, &self.proto_path);
 
         self.servers.extend(server);
-
-        if self.build_client {
-            let client = CodeGenBuilder::new().generate_client(&service, &self.proto_path);
-
-            self.clients.extend(client);
-        }
     }
 
     fn finalize(&mut self, buffer: &mut String) {
-        if self.build_client && !self.clients.is_empty() {
-            let clients = &self.clients;
-
-            let client_service = quote::quote! {
-                #clients
-            };
-
-            let ast: syn::File = syn::parse2(client_service).expect("not a valid tokenstream");
-            let code = prettyplease::unparse(&ast);
-            buffer.push_str(&code);
-
-            self.clients = TokenStream::default();
-        }
-
         if !self.servers.is_empty() {
             let servers = &self.servers;
 
@@ -192,8 +167,7 @@ mod test {
         let mut generator = Generator::new(&builder, protos);
         generator.generate(service, &mut String::new());
 
-        // assert that the servers were generated and the clients weren't
-        assert!(generator.clients.is_empty());
+        // assert that the service implementations were generated
         assert!(!generator.servers.is_empty());
     }
 
