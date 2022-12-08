@@ -1,3 +1,4 @@
+use super::{protoc, validator::validate_protos};
 use std::{io, path::Path};
 
 mod client;
@@ -43,14 +44,21 @@ impl Builder {
         protos: &[impl AsRef<Path>],
         includes: &[impl AsRef<Path>],
     ) -> io::Result<()> {
+        let proto_descriptors = protoc::compile_protos(protos, includes)?;
+
         #[cfg(feature = "postgres")]
         // validate Service methods against the database if there's a connection string
         if let Some(ref connection_string) = self.connection_string {
-            super::validator::validate(connection_string, protos, includes)?;
+            validate_protos(connection_string, &proto_descriptors)?;
         }
 
         // generate postgRPC Service implementations
-        config.service_generator(Box::new(generator::Generator::new(&self)));
+        // FIXME: include module resolution results in service generator
+        config.service_generator(Box::new(generator::Generator::new(
+            &self,
+            proto_descriptors,
+        )));
+
         config.compile_protos(protos, includes)?;
 
         Ok(())

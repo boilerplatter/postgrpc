@@ -1,58 +1,19 @@
-use prost::Message;
-use std::{io, path::Path};
+use crate::protoc::Protos;
+use std::io;
 
 /// Validate a set of `postgrpc`-annotated protos against a database
-pub(crate) fn validate(
-    connection_string: &str,
-    protos: &[impl AsRef<Path>],
-    includes: &[impl AsRef<Path>],
-) -> io::Result<()> {
+pub(crate) fn validate_protos(connection_string: &str, protos: &Protos) -> io::Result<()> {
     // set up the postgres client for validation
     let mut client = postgres::Client::connect(connection_string, postgres::NoTls) // FIXME: conditionally enable TLS
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
-    // compile the shared file descriptors
-    let file_descriptor_set = compile_file_descriptors(protos, includes)?;
-
-    for file in file_descriptor_set.file.iter() {
-        // FIXME: double-check that this works with module imports from other files...
-        // otherwise, consider flat-mapping all importable messages from across all files in the set
-        // extract the message structs from the original file descriptor
-        let messages = file
-            .message_type
-            .iter()
-            .map(|descriptor| {
-                (
-                    format!(".{}.{}", file.package(), descriptor.name()),
-                    descriptor,
-                )
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-
-        // extract the enums from the original file descriptor
-        let enums = file
-            .enum_type
-            .iter()
-            .map(|descriptor| {
-                (
-                    format!(".{}.{}", file.package(), descriptor.name()),
-                    descriptor,
-                )
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-
-        // extract the postgrpc-annotated methods from the original file descriptor
-        let methods = file
-            .service
-            .iter()
-            .flat_map(|service| service.method.iter())
-            .filter_map(|method| {
-                super::proto::Method::from_method_descriptor(method, &messages, &enums).transpose()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // validate the inputs and outputs of each postgrpc-annotated method
-        for method in methods {
+    // validate the inputs and outputs of each postgrpc-annotated method
+    for methods in protos.borrow_services().values() {
+        for method in methods
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
+            .values()
+        {
             // FIXME: use proper logging
             println!("Validating rpc {} against the database", method.name());
 
@@ -72,82 +33,26 @@ pub(crate) fn validate(
     Ok(())
 }
 
-/// Compile file descriptors with external `protoc` compiler
-fn compile_file_descriptors(
-    protos: &[impl AsRef<Path>],
-    includes: &[impl AsRef<Path>],
-) -> io::Result<prost_types::FileDescriptorSet> {
-    let tmp = tempfile::Builder::new().prefix("prost-build").tempdir()?;
-    let file_descriptor_set_path = tmp.path().join("prost-descriptor-set");
-
-    let protoc = prost_build::protoc_from_env();
-    let mut cmd = std::process::Command::new(protoc.clone());
-
-    cmd.arg("--include_imports")
-        .arg("--include_source_info")
-        .arg("-o")
-        .arg(&file_descriptor_set_path);
-
-    for include in includes {
-        if include.as_ref().exists() {
-            cmd.arg("-I").arg(include.as_ref());
-        }
-    }
-
-    for proto in protos {
-        cmd.arg(proto.as_ref());
-    }
-
-    // FIXME: use proper logging
-    println!("Running: {:?}", cmd);
-
-    let output = cmd.output().map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            // FIXME: copy #sourcing-protoc into our own docs
-            format!("failed to invoke protoc (hint: https://docs.rs/prost-build/#sourcing-protoc): (path: {protoc:?}): {error}"),
-        )
-    })?;
-
-    if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("protoc failed: {}", String::from_utf8_lossy(&output.stderr)),
-        ));
-    }
-
-    let buf = std::fs::read(&file_descriptor_set_path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("unable to open file_descriptor_set_path: {file_descriptor_set_path:?}, OS: {error}"),
-        )
-    })?;
-
-    // handle custom postgRPC annotations through the extensions API
-    let mut extension_registry = prost::ExtensionRegistry::new();
-    extension_registry.register(super::annotations::QUERY);
-
-    prost_types::FileDescriptorSet::decode_with_extensions(&*buf, extension_registry).map_err(
-        |error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid FileDescriptorSet: {error}"),
-            )
-        },
-    )
-}
-
 #[cfg(test)]
 mod test {
-    use super::validate;
-    use crate::setup;
+    use super::validate_protos;
+    use crate::{protoc::compile_protos, setup};
+    use std::path::Path;
+
+    fn validate(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]) -> std::io::Result<()> {
+        let protos = compile_protos(protos, includes)?;
+
+        validate_protos(
+            "postgresql://postgres:supersecretpassword@localhost:5432",
+            &protos,
+        )
+    }
 
     #[test]
     fn validates_inline_queries() {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/inline_query.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -159,7 +64,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/file_query.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -171,7 +75,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/scalar_fields.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -183,7 +86,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/enums.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -195,7 +97,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/composites.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -207,7 +108,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/field_order.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -218,24 +118,14 @@ mod test {
     fn validates_ctes() {
         setup::database();
 
-        validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
-            &["./tests/proto/cte.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/cte.proto"], &["./tests/proto", "./proto"]).unwrap();
     }
 
     #[test]
     fn validates_ddl_changes() {
         setup::database();
 
-        validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
-            &["./tests/proto/ddl.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap()
+        validate(&["./tests/proto/ddl.proto"], &["./tests/proto", "./proto"]).unwrap()
     }
 
     #[test]
@@ -243,7 +133,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/mismatched_field_name.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -255,7 +144,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/missing_message.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -267,7 +155,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/invalid_sql.proto"],
             &["./tests/proto", "./proto"],
         )
@@ -281,7 +168,6 @@ mod test {
         setup::database();
 
         validate(
-            "postgresql://postgres:supersecretpassword@localhost:5432",
             &["./tests/proto/transactions.proto"],
             &["./tests/proto", "./proto"],
         )

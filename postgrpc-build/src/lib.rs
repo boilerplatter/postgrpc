@@ -13,6 +13,7 @@
 mod code_gen;
 #[cfg(feature = "postgres")]
 mod proto;
+mod protoc;
 #[cfg(all(test, feature = "postgres"))]
 mod setup;
 #[cfg(feature = "postgres")]

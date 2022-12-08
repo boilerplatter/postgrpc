@@ -16,17 +16,26 @@ static EMPTY_DESCRIPTOR: Lazy<DescriptorProto> = Lazy::new(|| DescriptorProto {
 });
 
 /// Internal representation of input and output messages
-#[derive(Debug, Default)]
-struct Message<'a> {
+#[derive(Debug)]
+pub(crate) struct Message<'a> {
+    name: &'a str,
     fields: Vec<Field<'a>>,
 }
 
-impl<'a> Message<'a> {
+impl<'a, 'b> Message<'a> {
+    /// Bulid an empty message corresponding to the Empty well-known-type
+    fn empty() -> Self {
+        Self {
+            name: EMPTY_DESCRIPTOR.name(),
+            fields: Vec::new(),
+        }
+    }
+
     /// Create a new Message and resolve its fields' dependency graph along the way
     fn try_resolve(
         proto: &'a DescriptorProto,
-        messages: &'a HashMap<String, &'a DescriptorProto>,
-        enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+        messages: &'b HashMap<String, &'a DescriptorProto>,
+        enums: &'b HashMap<String, &'a EnumDescriptorProto>,
     ) -> io::Result<Self> {
         // ensure fields are ordered by their tag/number instead of file order
         let mut fields = proto
@@ -37,31 +46,42 @@ impl<'a> Message<'a> {
 
         fields.sort_unstable_by_key(|field| field.number());
 
-        Ok(Self { fields })
+        Ok(Self {
+            name: proto.name(),
+            fields,
+        })
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.name
+    }
+
+    pub(crate) fn fields(&'a self) -> impl Iterator<Item = &'a Field<'a>> {
+        self.fields.iter()
     }
 }
 
 /// Internal representation of a field along with a reference to its fully-resolved composite type
 #[derive(Debug)]
-struct Field<'a> {
+pub(crate) struct Field<'a> {
     proto: &'a FieldDescriptorProto,
     // CORRECTNESS: this should only be resolved for composite Message and Enum types
     composite_type: Option<CompositeType<'a>>,
 }
 
-impl<'a> Field<'a> {
+impl<'a, 'b> Field<'a> {
     /// attempt to resolve a proper Field and its associated composite types
     fn try_resolve(
         proto: &'a FieldDescriptorProto,
-        messages: &'a HashMap<String, &'a DescriptorProto>,
-        enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+        messages: &'b HashMap<String, &'a DescriptorProto>,
+        enums: &'b HashMap<String, &'a EnumDescriptorProto>,
     ) -> io::Result<Self> {
         match proto.r#type() {
             FieldType::Enum => {
                 let enum_name = proto.type_name();
 
                 // resolve both top-level and nested enum resolution within a single file
-                let composite_type = match enums.get(enum_name).copied() {
+                let composite_type = match enums.get(enum_name) {
                     Some(found_enum) => Some(CompositeType::Enum(found_enum)),
                     None => match enum_name.split('.').collect::<Vec<_>>()[..] {
                         [_, package, parent, enum_name] => messages
@@ -101,7 +121,7 @@ impl<'a> Field<'a> {
                 let message_name = proto.type_name();
 
                 // resolve both top-level and nested message resolution within a single file
-                let composite_type = match messages.get(message_name).copied() {
+                let composite_type = match messages.get(message_name) {
                     Some(found_message) => Message::try_resolve(found_message, messages, enums)
                         .map(CompositeType::Message)
                         .map(Option::Some)?,
@@ -240,7 +260,7 @@ impl<'a> Field<'a> {
                     postgres::types::Kind::Composite(fields),
                     Some(CompositeType::Message(message)),
                 ) if Some(postgres_type.name()) == self.type_name().split('.').last() => {
-                    validate_fields(&message.fields, &fields)?;
+                    validate_fields(&message.fields, fields)?;
 
                     true
                 }
@@ -274,7 +294,7 @@ impl<'a> Field<'a> {
         self.proto.number()
     }
 
-    fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         self.proto.name()
     }
 
@@ -306,7 +326,7 @@ pub(crate) struct Method<'a> {
     name: &'a str,
 }
 
-impl<'a> Method<'a> {
+impl<'a, 'b> Method<'a> {
     /// Get the SQL query associated with this [`Method`]
     pub(crate) fn query(&self) -> &str {
         &self.query
@@ -317,13 +337,24 @@ impl<'a> Method<'a> {
         self.name
     }
 
+    /// Get the input type of this [`Method`]
+    pub(crate) fn input_type(&self) -> &Message<'a> {
+        &self.input_type
+    }
+
+    /// Get the output type of this [`Method`]
+    pub(crate) fn output_type(&self) -> &Message<'a> {
+        &self.output_type
+    }
+
     /// Extract the postgrpc options from a `prost_types::MethodDescriptorProto`
     /// and pair the inputs and outputs with their Message descriptors to create a [`Method`]
     pub(crate) fn from_method_descriptor(
         method: &'a MethodDescriptorProto,
-        messages: &'a HashMap<String, &'a DescriptorProto>,
-        enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+        messages: &'b HashMap<String, &'a DescriptorProto>,
+        enums: &'b HashMap<String, &'a EnumDescriptorProto>,
     ) -> Result<Option<Self>, io::Error> {
+        // FIXME: check for missing input/output types
         let input_type = get_message(messages, enums, method.input_type())?;
         let output_type = get_message(messages, enums, method.output_type())?;
         let name = method.name();
@@ -433,15 +464,15 @@ where
 
 /// Helper function to extract a Message from top-level messages by name
 fn get_message<'a, 'b>(
-    messages: &'a HashMap<String, &'a DescriptorProto>,
-    enums: &'a HashMap<String, &'a EnumDescriptorProto>,
+    messages: &'b HashMap<String, &'a DescriptorProto>,
+    enums: &'b HashMap<String, &'a EnumDescriptorProto>,
     message_name: &'b str,
 ) -> io::Result<Message<'a>> {
     if message_name == EMPTY_DESCRIPTOR.name() {
-        Ok(Message::default())
+        Ok(Message::empty())
     } else {
         // get the message from the top-level context
-        let message = messages.get(message_name).copied().ok_or_else(|| {
+        let message = messages.get(message_name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Expected message {message_name}, but it doesn't exist"),

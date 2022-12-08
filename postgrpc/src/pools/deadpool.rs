@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio_postgres::{types::ToSql, Row};
+use tokio_postgres::{types::BorrowToSql, Row};
 use tonic::{async_trait, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
@@ -208,13 +208,15 @@ impl Connection<Struct> for Client {
     type Error = Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query<P>(
+    async fn query<B, I>(
         &self,
         statement: &str,
-        parameters: &[P],
+        parameters: I,
     ) -> Result<Self::RowStream, Self::Error>
     where
-        P: ToSql + Sync,
+        B: BorrowToSql,
+        I: IntoIterator<Item = B> + Send + Sync + Clone,
+        I::IntoIter: ExactSizeIterator + Send,
     {
         tracing::trace!("Querying Connection");
 
@@ -223,15 +225,18 @@ impl Connection<Struct> for Client {
 
         // check parameter count to avoid panics
         let inferred_types = prepared_statement.params();
+        let params = parameters.clone().into_iter();
 
-        if inferred_types.len() != parameters.len() {
+        if inferred_types.len() != params.len() {
             return Err(Error::Params {
                 expected: inferred_types.len(),
-                actual: parameters.len(),
+                actual: params.len(),
             });
         }
 
-        let rows = match query_raw_json(self, statement, &prepared_statement, parameters).await {
+        let rows = match query_raw_json(self, statement, &prepared_statement, parameters.clone())
+            .await
+        {
             // retry the query if the schema changed underneath the prepared statement cache
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
@@ -291,13 +296,15 @@ impl Connection<Row> for Client {
     type Error = Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query<P>(
+    async fn query<B, I>(
         &self,
         statement: &str,
-        parameters: &[P],
+        parameters: I,
     ) -> Result<Self::RowStream, Self::Error>
     where
-        P: ToSql + Sync,
+        B: BorrowToSql,
+        I: IntoIterator<Item = B> + Send + Sync + Clone,
+        I::IntoIter: ExactSizeIterator + Send,
     {
         tracing::trace!("Querying TypedConnection");
 
@@ -308,7 +315,8 @@ impl Connection<Row> for Client {
         let inferred_types = prepared_statement.params();
 
         // FIXME: avoid the Clone requirement on parameters
-        let parameter_count = parameters.len();
+        let params = parameters.clone().into_iter();
+        let parameter_count = params.len();
 
         if inferred_types.len() != parameter_count {
             return Err(Error::Params {
@@ -317,7 +325,11 @@ impl Connection<Row> for Client {
             });
         }
 
-        let rows = match self.client.query_raw(&prepared_statement, parameters).await {
+        let rows = match self
+            .client
+            .query_raw(&prepared_statement, parameters.clone())
+            .await
+        {
             // retry the query if the schema changed underneath the prepared statement cache
             Err(error) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
@@ -345,14 +357,16 @@ impl Connection<Row> for Client {
 }
 
 /// Wrapper around a raw JSON query that can be retried
-async fn query_raw_json<P>(
+async fn query_raw_json<B, I>(
     client: &Client,
     statement: &str,
     prepared_statement: &Statement,
-    parameters: &[P],
+    parameters: I,
 ) -> Result<RowStream, Error>
 where
-    P: ToSql + Sync,
+    B: BorrowToSql,
+    I: IntoIterator<Item = B> + Send + Sync + Clone,
+    I::IntoIter: ExactSizeIterator + Send,
 {
     let rows = if prepared_statement.columns().is_empty() {
         // execute statements that return no data without modification

@@ -64,7 +64,7 @@ where
 
         // attempt to make a simple query against the pool
         connection
-            .query::<Parameter>("SELECT 1", &[])
+            .query::<Vec<Parameter>, _>("SELECT 1", vec![])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
@@ -91,7 +91,7 @@ where
 
         // attempt to make a simple query against the transaction
         transaction
-            .query::<Parameter>("SELECT 1", &[])
+            .query::<Vec<Parameter>, _>("SELECT 1", vec![])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
