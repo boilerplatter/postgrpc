@@ -2,6 +2,5 @@
 
 members = [
   "postgrpc",
-  "postguard",
   "postgrpc-build",
 ]
