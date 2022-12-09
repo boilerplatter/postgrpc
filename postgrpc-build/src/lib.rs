@@ -11,13 +11,13 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod builder;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "validation")]
 mod proto;
 mod protoc;
 mod server;
-#[cfg(all(test, feature = "postgres"))]
+#[cfg(all(test, feature = "validation"))]
 mod setup;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "validation")]
 mod validator;
 
 #[allow(unreachable_pub)]

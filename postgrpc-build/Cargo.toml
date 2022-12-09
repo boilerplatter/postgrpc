@@ -2,6 +2,7 @@
 name = "postgrpc-build"
 version = "0.1.0"
 edition = "2021"
+autoexamples = false
 
 [dependencies]
 tempfile = "3.3.0"
@@ -12,9 +13,17 @@ proc-macro2 = "1.0.47"
 quote = "1.0.21"
 ouroboros = "0.15.5"
 
+[dependencies.native-tls]
+optional = true
+version = "0.2.11"
+
 [dependencies.postgres]
 version = "0.19.4"
 optional = true
+
+[dependencies.postgres-native-tls]
+optional = true
+version = "0.5.0"
 
 [dependencies.prost]
 git = "https://github.com/NAlexPear/prost.git"
@@ -37,4 +46,14 @@ branch = "extensions"
 version = "0.8.4"
 
 [features]
-default = ["postgres"]
+default = [
+  "validation",
+  "ssl-native-tls"
+]
+
+ssl-native-tls = [
+  "native-tls",
+  "postgres-native-tls"
+]
+
+validation = ["postgres"]

@@ -18,8 +18,7 @@ where
     let server_mod = quote::format_ident!("{}_server", naive_snake_case(service.name()));
     let methods = generate_methods(service, proto_service);
 
-    // FIXME: make sure that dependencies are properly resolved here!
-    // we should namespace these in a "codegen" module in postgrpc
+    // generate the actual Rust output
     quote! {
         use postgrpc::codegen::*;
         use proto::#server_mod::{#server_trait as GrpcService, #server_service};
@@ -107,98 +106,109 @@ where
     let mut tokens = TokenStream::new();
 
     for method in service.methods() {
-        let name = method.name();
+        // generate identifiers
+        let name = quote::format_ident!("{}", method.name());
         let identifier = method.identifier();
+        let stream = quote::format_ident!("{identifier}Stream");
 
-        // FIXME: handle the missing annotation case either gracefully or completely or both
+        // reject methods that are not server-side streaming methods
+        // in the future, unary method support might be added
+        assert!(
+            !method.client_streaming() && method.server_streaming(),
+            "Method {identifier} is not configured as a server-streaming rpc. Unary calls are not supported in PostgRPC Services."
+        );
+
+        // extract the postgrpc-annotated method, rejecting services that that mix and match
         let proto_method = proto_service
             .get_method(identifier)
-            .unwrap_or_else(|| panic!("Expected method {identifier}, but it doesn't exist"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "Expected method {identifier} to have a (postgrpc.query) annotation, but it does not. PostgRPC Services must all have a query annotation!"
+                )
+            });
 
+        // generate the request types
+        let input_type = proto_method.input_type();
+
+        let request = if input_type.name() == ".google.protobuf.Empty" {
+            quote! { () }
+        } else {
+            let request = quote::format_ident!("{}", input_type.proto_type());
+
+            quote! { #request }
+        };
+
+        let request_fields = input_type
+            .fields()
+            .map(|field| quote::format_ident!("{}", field.name()));
+
+        // generate the response types
+        let output_type = proto_method.output_type();
+
+        let (response, row_conversion) = if output_type.name() == ".google.protobuf.Empty" {
+            (quote! { () }, quote! { () })
+        } else {
+            let response = quote::format_ident!("{}", output_type.proto_type());
+            let fields = output_type.fields().map(|field| {
+                let key = field.name();
+                let field = quote::format_ident!("{}", key);
+
+                quote! {
+                    #field: row
+                        .try_get(#key)
+                        .map_err(|error| Status::internal(error.to_string()))?
+                }
+            });
+
+            (
+                quote! { #response },
+                quote! {
+                    #response {
+                        #(#fields),*
+                    }
+                },
+            )
+        };
+
+        // get the query from the postgrpc annotation
         let query = proto_method.query();
 
-        // FIXME: double-check that this shouldn't be snake-cased... is this a regression upstream?
-        let name = quote::format_ident!("{name}");
+        let method = quote! {
+            type #stream = UnboundedReceiverStream<Result<#response, Status>>;
 
-        // FIXME: either support all streaming combinations or complain loudly
-        if !method.client_streaming() && method.server_streaming() {
-            let stream = quote::format_ident!("{}Stream", method.identifier());
+            #[tracing::instrument(skip(self, request), err)]
+            async fn #name(&self, mut request: Request<#request>) -> Result<Response<Self::#stream>, Status> {
+                // derive a key from extensions to use as a connection pool key
+                let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
+                let request = request.into_inner();
 
-            // generate the request types
-            let input_type = proto_method.input_type();
-            let request = if input_type.name() == ".google.protobuf.Empty" {
-                quote! { () }
-            } else {
-                let request = quote::format_ident!("{}", input_type.proto_type());
+                // get the rows, converting output to #response messages
+                let rows = self
+                    .query(key, #query, &[#(&request.#request_fields),*])
+                    .await
+                    .map_err(Into::<Status>::into)?
+                    .map_err(Into::<Status>::into)
+                    .and_then(|row| async move { Ok(#row_conversion) });
 
-                quote! { #request }
-            };
-            let request_fields = input_type
-                .fields()
-                .map(|field| quote::format_ident!("{}", field.name()));
+                // create the row stream transmitter and receiver
+                let (transmitter, receiver) = unbounded_channel();
 
-            // generate the response types
-            let output_type = proto_method.output_type();
-            let (response, row_conversion) = if output_type.name() == ".google.protobuf.Empty" {
-                (TokenStream::new(), quote! { () })
-            } else {
-                let response = quote::format_ident!("{}", output_type.proto_type());
-                let fields = output_type.fields().map(|field| {
-                    let key = field.name();
-                    let field = quote::format_ident!("{}", key);
+                // emit the rows as a Send stream
+                spawn(async move {
+                    pin_mut!(rows);
 
-                    // FIXME: make this fallible! panic-ing at runtime is probably incorrect,
-                    // despite previous efforts to check and validate the types
-                    quote! { #field: row.get(#key) }
+                    while let Some(row) = rows.next().await {
+                        transmitter.send(row)?;
+                    }
+
+                    Ok::<_, SendError<_>>(())
                 });
 
-                (
-                    quote! { #response },
-                    quote! {
-                        #response {
-                            #(#fields),*
-                        }
-                    },
-                )
-            };
+                Ok(Response::new(UnboundedReceiverStream::new(receiver)))
+            }
+        };
 
-            let method = quote! {
-                type #stream = UnboundedReceiverStream<Result<#response, Status>>;
-
-                #[tracing::instrument(skip(self, request), err)]
-                async fn #name(&self, mut request: Request<#request>) -> Result<Response<Self::#stream>, Status> {
-                    // derive a key from extensions to use as a connection pool key
-                    let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
-                    let request = request.into_inner();
-
-                    // get the rows, converting output to #response messages
-                    let rows = self
-                        .query(key, #query, &[#(&request.#request_fields),*])
-                        .await
-                        .map_err(Into::<Status>::into)?
-                        .map_ok(|row| #row_conversion)
-                        .map_err(Into::<Status>::into);
-
-                    // create the row stream transmitter and receiver
-                    let (transmitter, receiver) = unbounded_channel();
-
-                    // emit the rows as a Send stream
-                    spawn(async move {
-                        pin_mut!(rows);
-
-                        while let Some(row) = rows.next().await {
-                            transmitter.send(row)?;
-                        }
-
-                        Ok::<_, SendError<_>>(())
-                    });
-
-                    Ok(Response::new(UnboundedReceiverStream::new(receiver)))
-                }
-            };
-
-            tokens.extend(method);
-        }
+        tokens.extend(method);
     }
 
     tokens

@@ -9,8 +9,6 @@ use std::{collections::HashMap, fs, io};
 /// based on [`prost_types::MethodDescriptorProto`]
 #[derive(Debug)]
 pub(crate) struct Method<'a> {
-    // TODO: add back MethodDescriptorProto fields needed for code generation
-    // (e.g. name, server_streaming, etc)
     input_type: Message<'a>,
     output_type: Message<'a>,
     query: String,
@@ -45,7 +43,6 @@ impl<'a, 'b> Method<'a> {
         messages: &'b HashMap<String, &'a DescriptorProto>,
         enums: &'b HashMap<String, &'a EnumDescriptorProto>,
     ) -> Result<Option<Self>, io::Error> {
-        // FIXME: check for missing input/output types
         let input_type = get_message(messages, enums, method.input_type())?;
         let output_type = get_message(messages, enums, method.output_type())?;
         let name = method.name();

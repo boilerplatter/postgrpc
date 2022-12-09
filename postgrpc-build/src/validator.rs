@@ -3,8 +3,21 @@ use std::io;
 
 /// Validate a set of `postgrpc`-annotated Services against a database
 pub(crate) fn validate_services(connection_string: &str, services: &Services) -> io::Result<()> {
+    // set up TLS connectors
+    #[cfg(feature = "ssl-native-tls")]
+    let tls_connector = {
+        let connector = native_tls::TlsConnector::builder()
+            .build()
+            .map_err(|error| io::Error::new(io::ErrorKind::ConnectionAborted, error.to_string()))?;
+
+        postgres_native_tls::MakeTlsConnector::new(connector)
+    };
+
+    #[cfg(not(feature = "ssl-native-tls"))]
+    let tls_connector = postgres::NoTls;
+
     // set up the postgres client for validation
-    let mut client = postgres::Client::connect(connection_string, postgres::NoTls) // FIXME: conditionally enable TLS
+    let mut client = postgres::Client::connect(connection_string, tls_connector)
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
     // validate the inputs and outputs of each postgrpc-annotated method
@@ -15,18 +28,13 @@ pub(crate) fn validate_services(connection_string: &str, services: &Services) ->
             .methods();
 
         for method in methods {
-            // FIXME: use proper logging
-            println!("Validating rpc {} against the database", method.name());
-
             // prepare the method's SQL query with the database
             let statement = client
                 .prepare(method.query())
                 .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
-            // check the input message fields against the parameter types
+            // check the input and output types against database types
             method.validate_input(statement.params())?;
-
-            // check the output message fields against the column types
             method.validate_output(statement.columns())?;
         }
     }

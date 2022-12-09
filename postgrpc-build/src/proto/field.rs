@@ -221,7 +221,14 @@ impl<'a, 'b> Field<'a> {
                     )
                 ));
             }
-            fixme => todo!("FIXME: support {fixme:#?}"),
+            unsupported_field => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Fields of type {unsupported_field:?} are not supported by PostgRPC. Please use a different protobuf type.",
+                    )
+                ));
+            }
         } {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

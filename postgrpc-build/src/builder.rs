@@ -5,12 +5,12 @@ use std::{io, path::Path};
 /// Configuration builder for proto compilation
 #[derive(Debug, Default)]
 pub struct Builder {
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "validation")]
     connection_string: Option<String>,
 }
 
 impl Builder {
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "validation")]
     /// Provide a database connection string for type validation
     pub fn validate_with(mut self, connection_string: String) -> Self {
         self.connection_string = Some(connection_string);
@@ -35,7 +35,7 @@ impl Builder {
     ) -> io::Result<()> {
         let services = protoc::compile_services(protos, includes)?;
 
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "validation")]
         // validate Service methods against the database if there's a connection string
         if let Some(ref connection_string) = self.connection_string {
             validate_services(connection_string, &services)?;
@@ -103,8 +103,6 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
             let server_service = quote::quote! {
                 #servers
             };
-
-            println!("{server_service:#}");
 
             let ast: syn::File = syn::parse2(server_service).expect("not a valid tokenstream");
             let code = prettyplease::unparse(&ast);
