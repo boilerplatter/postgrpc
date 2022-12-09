@@ -18,10 +18,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio_postgres::{
-    types::ToSql,
-    Row,
-};
+use tokio_postgres::{types::ToSql, Row};
 use tonic::{async_trait, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
@@ -202,7 +199,7 @@ impl From<RowStream> for StructStream {
     }
 }
 
-/// `Connection`-implementing wrapper around a [`deadpool_postgres::Client`]
+/// [`Connection`]-implementing wrapper around a [`deadpool_postgres::Client`]
 pub struct Client {
     client: deadpool_postgres::Client,
 }
@@ -217,8 +214,7 @@ impl Connection<Struct> for Client {
         &self,
         statement: &str,
         parameters: &[&(dyn ToSql + Sync)],
-    ) -> Result<Self::RowStream, Self::Error>
-    {
+    ) -> Result<Self::RowStream, Self::Error> {
         tracing::trace!("Querying Connection");
 
         // prepare the statement using the statement cache
@@ -233,9 +229,7 @@ impl Connection<Struct> for Client {
             });
         }
 
-        let rows = match query_raw_json(self, statement, &prepared_statement, parameters)
-            .await
-        {
+        let rows = match query_raw_json(self, statement, &prepared_statement, parameters).await {
             // retry the query if the schema changed underneath the prepared statement cache
             Err(Error::Query(error)) if error.code() == Some(&SqlState::FEATURE_NOT_SUPPORTED) => {
                 tracing::warn!("Schema poisoned underneath statement cache. Retrying query");
@@ -244,7 +238,7 @@ impl Connection<Struct> for Client {
                     .statement_cache
                     .remove(statement, inferred_types);
 
-                query_raw_json(self, statement, &prepared_statement, &parameters).await
+                query_raw_json(self, statement, &prepared_statement, parameters).await
             }
             result => result,
         }?;
@@ -328,7 +322,9 @@ impl Connection<Row> for Client {
                     .statement_cache
                     .remove(statement, inferred_types);
 
-                self.client.query_raw(&prepared_statement, parameters.to_vec()).await
+                self.client
+                    .query_raw(&prepared_statement, parameters.to_vec())
+                    .await
             }
             result => result,
         }?;
@@ -528,12 +524,19 @@ impl Default for Configuration {
     }
 }
 
-#[allow(missing_docs)]
+/// Configuration options for how connections are recycled in a [`Pool`]. Based on
+/// [`deadpool_postgres::RecyclingMethod`](https://docs.rs/deadpool-postgres/latest/deadpool_postgres/enum.RecyclingMethod.html).
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RecyclingMethod {
+    /// Only run `Client::is_closed()` when recycling existing connections. This is a safe choice
+    /// that works well when using compiled queries or when working in a trusted environment.
     Fast,
+    /// Run `Client::is_closed()` and execute a test query.
+    ///
+    /// This is slower, but guarantees that the database connection is ready to be used. Normally, Client::is_closed() should be enough to filter out bad connections, but under some circumstances (i.e. hard-closed network connections) it’s possible that Client::is_closed() returns false while the connection is dead. You will receive an error on your first query then.
     Verified,
+    /// Like `Verified`, but resets Session authorization and temp tables.
     #[default]
     Clean,
 }
@@ -548,12 +551,17 @@ impl From<RecyclingMethod> for deadpool_postgres::RecyclingMethod {
     }
 }
 
-#[allow(missing_docs)]
+///TLS configuration.
+///
+/// This is a 1:1 copy of [`tokio_postgres::config::SslMode`], but with added `serde` support.
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum SslMode {
+    /// Do not use TLS.
     Disable,
+    /// Prefer TLS, but don't prevent connections that lack it.
     Prefer,
+    /// Require the use of TLS for all connections.
     Require,
 }
 

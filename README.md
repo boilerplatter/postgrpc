@@ -38,14 +38,14 @@ PostgRPC fills a similar niche as the excellent [PostgREST](https://postgrest.or
 - **Performance**: running a query over a persistent connection will always be the fastest option, but using PostgRPC should be the next-best option. Where concurrent queries are needed, and where those queries scale up faster than connections, PostgRPC should handle more concurrent query requests than any other direct-connection-based connection pool solution.
 - **Primitive Focus**: where Postgres has a feature, PostgRPC should support that feature through the query interface. Where this is impossible, PostgRPC should strive to provide a distributed equivalent.
 - **Ease-of-Use**: those looking to get started with PostgRPC should be able to spin it up as a service quickly on a variety of systems. PostgRPC should ship with sane defaults for most use-cases. For more limited cases, PostgRPC should be easy to configure through feature-gating and conditional compilation.
-- **Type Inference**: PostgRPC should accomdate the flexibility of JSON in inputs and outputs rather than mapping JSON or `gRPC` types to Postgres types. This includes leveraging Postgres's built-in type inference wherever possible.
-- **Customization**: PostgRPC's provided binaries should be a reference implementation of a `gRPC` service. For those that need more flexibility, the `postgrpc` library is provided to handle custom connection pool logic.
+- **Type Inference by Default**: PostgRPC's dynamic `query` methods should accomdate the flexibility of JSON in inputs and outputs rather than mapping JSON or `gRPC` types to Postgres types. This includes leveraging Postgres's built-in type inference wherever possible.
+- **Type Safety When Needed**: for those looking for end-to-end type safety and strict validation between `proto3` and Postgres types, `postgrpc-build` should give users the confidence to leverage protobuf definitions as reliable sources of type-safe truth.
+- **Customization**: PostgRPC's provided binaries should be a reference implementation of a `gRPC` service. For those that need more flexibility, the `postgrpc` library is provided to handle custom connection pool logic, and `postgrpc-build` can be used to validate and generate entire type-safe implementations for use in a `tonic`-based application.
 
 ### Non-Goals
 
 - **Auth**: PostgRPC does not include authentication or authorization mechanisms beyond those provided by the Postgres database itself. Setting the Postgres `ROLE` can be done through an `X-Postgres-Role` header (when the `role-header` feature is enabled), and correctly deriving the value of that header is the responsibility of other services better suited to the task (e.g. [Ory Oathkeeper](https://www.ory.sh/oathkeeper/docs/next/))
-- **Strict Request Types**: PostgRPC will use binary encoding of input values where possible. Where the binary encoding of a parameter is not obvious, PostgRPC will use text encoding to leverage Postgres's built-in type inference. All outputs will be decoded as JSON-compatible dynamic types only, with no attempt to use stricter Postgres types.
-- **All-in-One**: PostgRPC does not replace your application stack. Instead, PostgRPC is a sharp tool that's easy to integrate into a toolbox that includes things like user management, load balancing, and routing of traffic from public endpoints. Do _not_ expose your database publicly through PostgRPC unless you know what you're doing (and even then, consider alternatives like those found in the `examples` directory).
+- **All-in-One**: PostgRPC does not replace your application stack. Instead, PostgRPC is a sharp tool that's easy to integrate into a toolbox that includes things like user management, load balancing, and routing of traffic from public endpoints. Do _not_ expose your database publicly through PostgRPC unless you know what you're doing (and are using the `compiled-queries` feature built into `postgrpc-build`).
 
 ## Getting Started
 
@@ -53,7 +53,9 @@ PostgRPC fills a similar niche as the excellent [PostgREST](https://postgrest.or
 
 For binary installations, use `cargo install postgrpc`. The compilation of the `postgrpc` executable can be customized with `--features`.
 
-For library installations, use `cargo add postgrpc` within a `cargo`-managed Rust project.
+To use `postgrpc` as a library, run `cargo add postgrpc` within a `cargo`-managed Rust project.
+
+To compile type-safe routes from `proto3` files for use in your own Rust projects, install the `postgrpc-build` library from the `compiled-queries` branch of the `postgrpc` GitHub repository with `cargo add postgrpc-build --git https://github.com/boilerplatter/postgrpc --branch compiled-queries`.
 
 ### Configuration
 
@@ -78,13 +80,13 @@ In addition, the default connection pool can be configured with the following en
 
 ### Usage
 
-With PostgRPC running on the default port and host, [`grpcurl`](https://github.com/fullstorydev/grpcurl) can be used to query the database:
+With PostgRPC running on the default port and host, [`grpcurl`](https://github.com/fullstorydev/grpcurl) can be used to query the database using the dynamic `Query` endpoint:
 
 ```bash
 grpcurl \
   -plaintext \
   -d '{"statement":"select 1 + 1 as two"}' \
-  [::]:50051 postgres.Postgres/Query
+  [::]:50051 postgres.v1.Postgres/Query
 
 # { "two": 2 }
 ```
@@ -96,7 +98,7 @@ grpcurl \
   -plaintext \
   -d '{"statement":"select current_user"}' \
   -H 'X-Postgres-Role: my-other-user' \
-  [::]:50051 postgres.Postgres/Query
+  [::]:50051 postgres.v1.Postgres/Query
 
 # { "current_user": "my-other-user" }
 ```
@@ -114,7 +116,8 @@ All examples can be run from the `./examples` directory using `docker-compose`. 
 
 1. **Who built PostgRPC?** The team at [Platter](https://platter.dev).
 2. **Is PostgRPC ready for production?** PostgRPC should be considered alpha-level software, and no warranty is given or implied. If you still want to run PostgRPC yourself, be sure to run it as a part of a stack that includes robust authentication and authorization, and ensure that you harden your Postgres database against malicious queries! But you were doing that with your Postgres database anyway, right?
-3. **How do you pronounce PostgRPC?** "post-ger-puck"
+3. **Can I query PostgRPC directly from a web browser?** Through a Proxy like `envoy`, yes. But querying PostgRPC directly through the `Query` interfaces in your single-page-apps is not recommended, as malicious users can run all sorts of nasty queries on your database. Instead, use `postgrpc-build` to compile known, safe queries into services that you can use in your own gRPC applications.
+4. **How do you pronounce PostgRPC?** "post-ger-puck"
 
 ## Contributing
 
@@ -125,10 +128,5 @@ Contributions are welcome in the form of bug reporting, feature requests, softwa
 - [ ] Native JSON transcoding without needing an additional proxy
 - [ ] [`LISTEN`/`NOTIFY`](https://www.postgresql.org/docs/current/sql-notify.html)-based channels
 - [ ] [`MATERIALIZED VIEW`](https://www.postgresql.org/docs/14/rules-materializedviews.html)-based update streams
-- [ ] Explicit query registration and compile-time gRPC-compatible `proto` generation for an alternative to the dynamic `Query` interfaces
-
-## Associated Crates
-
-### [Postguard](https://github.com/boilerplatter/postgrpc/tree/master/postguard)
-[![Latest Version](https://img.shields.io/crates/v/postguard.svg)](https://crates.io/crates/postguard)
-[![Documentation](https://docs.rs/postguard/badge.svg)](https://docs.rs/postguard)
+- [ ] `protoc-gen-postgrpc` for generating PostgRPC services through `protoc` directly
+- [ ] `postgrpc-build`-based auto-compilation during `postgrpc` binary installation

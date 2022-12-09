@@ -18,51 +18,50 @@ pub mod transaction;
 #[derive(Debug, Clone)]
 pub struct Parameter(pbjson_types::Value);
 
-/// gRPC-compatible connection behavior across database connection types. All inputs and outputs
-/// are based on protobuf's JSON-compatible well-known-types [`pbjson_types::Struct`] and
-/// [`pbjson_types::Value`].
+/// Generic `async` connection behavior for implementing abstractions over database connections of
+/// all flavors. [`Connection`] is generic over its return type, which means that it can
+/// encapsulate all of the translation between database rows and arbitrary types as-needed.
 ///
 /// #### Example:
 ///
 /// ```rust
 /// use postgrpc::pools::{Connection, Parameter};
-/// use tokio_postgres::Row;
+/// use tokio_postgres::{Row, Error, types::ToSql};
 /// use tonic::Status;
 ///
-/// // implementing a real StructStream (a fallible stream of Structs)
+/// // implementing a real RowStream (a fallible stream of database Rows)
 /// // is an exercise left to the reader
-/// struct StructStream;
-///
-/// impl From<Vec<Row>> for StructStream {
-///   // also an exercise for the reader
+/// struct RowStream {
+///   inner: tokio_postgres::RowStream,
 /// }
 ///
-/// #[async_trait]
+/// #[postgrpc::async_trait]
 /// impl Connection for tokio_postgres::Client {
+///   type RowStream = RowStream;
 ///   type Error = Status;
-///   type RowStream = StructStream;
 ///
+///  #[tracing::instrument(skip(self, parameters))]
 ///   async fn query(
 ///     &self,
 ///     statement: &str,
-///     parameters: &[Parameter],
+///     parameters: &[&(dyn ToSql + Sync)],
 ///   ) -> Result<Self::RowStream, Self::Error> {
-///     // Parameter implements ToSql, so can be used directly in query()
-///     let rows: Vec<_> = self
-///       .query(statement, parameters)
+///     tracing::trace!("Executing query on Connection");
+///
+///     // tokio_postgres::Client::query_raw returns a Stream of Rows
+///     let rows = self
+///       .query_raw(statement, parameters)
 ///       .await
 ///       .map_error(|error| Status::invalid_argument(error.to_string()))?;
 ///
-///     // it's best to stream rows instead of collecting them into a Vec
-///     // but this is only meant to be a quick example
-///      Ok(StructStream::from(rows))
+///      Ok(RowStream::from(rows))
 ///   }
 ///
 ///  #[tracing::instrument(skip(self))]
 ///  async fn batch(&self, query: &str) -> Result<(), Self::Error> {
 ///    tracing::trace!("Executing batch query on Connection");
 ///    self.batch_execute(query).await.map_err(|error| Status::invalid_argument(error.to_string()))
-///    }
+///   }
 /// }
 /// ```
 
@@ -79,7 +78,7 @@ where
     /// errors within a RowStream
     type Error: std::error::Error + Into<Status> + Send + Sync;
 
-    /// Run a query parameterized by the Connection's associated Parameter, returning a RowStream
+    /// Run a query parameterized by any type that implements [`tokio_postgres::types::ToSql`], returning a RowStream
     async fn query(
         &self,
         statement: &str,
@@ -94,7 +93,7 @@ where
 ///
 /// The key difference between a [`Pool`] and most other connection pools is the way new
 /// connections are accessed: by building connection logic around a `Key` that can be derived from
-/// a [`tonic::Request`], all connection isolation and preparation can be handled internally to the
+/// a [`tonic::Request`], all connection isolation and preparation can be handled within the
 /// pool. Furthermore, pools don't _have_ to be traditional pools, but can hand out shared access
 /// to a single [`Connection`].
 ///
