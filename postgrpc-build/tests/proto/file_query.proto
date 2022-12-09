@@ -2,7 +2,7 @@ syntax = "proto3";
 package file;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service File {
   rpc TestFile (google.protobuf.Empty) returns (TestValue) {

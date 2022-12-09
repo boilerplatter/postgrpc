@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "tonic"
 version = "0.8.3"
-source = "git+https://github.com/NAlexPear/tonic.git?branch=extensions#7912ed6344cfb499e7193e21f2aeb8edd1d6db43"
+source = "git+https://github.com/NAlexPear/tonic.git?branch=extensions#36a948aa8fb66b87b8af358014f02bdfd3def2d2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1703,7 +1703,7 @@ dependencies = [
 [[package]]
 name = "tonic-build"
 version = "0.8.4"
-source = "git+https://github.com/NAlexPear/tonic.git?branch=extensions#7912ed6344cfb499e7193e21f2aeb8edd1d6db43"
+source = "git+https://github.com/NAlexPear/tonic.git?branch=extensions#36a948aa8fb66b87b8af358014f02bdfd3def2d2"
 dependencies = [
  "prettyplease",
  "proc-macro2",

@@ -2,7 +2,7 @@ syntax = "proto3";
 package cte;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service Cte {
   rpc TestCte (google.protobuf.Empty) returns (TestValue) {

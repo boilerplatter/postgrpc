@@ -2,7 +2,7 @@ syntax = "proto3";
 package inline;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service Inline {
   rpc TestInline (google.protobuf.Empty) returns (TestValue) {

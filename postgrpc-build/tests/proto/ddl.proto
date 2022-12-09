@@ -2,7 +2,7 @@ syntax = "proto3";
 package ddl;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service Ddl {
   rpc TestDdl (google.protobuf.Empty) returns (google.protobuf.Empty) {

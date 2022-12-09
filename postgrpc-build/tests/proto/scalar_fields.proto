@@ -1,7 +1,7 @@
 syntax = "proto3";
 package scalar;
 
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service Scalar {
   rpc TestScalarFields (TestValue) returns (TestValue) {

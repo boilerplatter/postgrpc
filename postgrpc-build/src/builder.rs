@@ -1,4 +1,4 @@
-use super::{proto::Services, protoc, server, validator::validate_services};
+use crate::{annotations, proto::Services, protoc, server, validator::validate_services};
 use proc_macro2::TokenStream;
 use std::{io, path::Path};
 
@@ -33,7 +33,22 @@ impl Builder {
         protos: &[impl AsRef<Path>],
         includes: &[impl AsRef<Path>],
     ) -> io::Result<()> {
-        let services = protoc::compile_services(protos, includes)?;
+        // create a tempdir for embedded annotations and emitted file descriptors
+        let tmp = tempfile::Builder::new().prefix("prost-build").tempdir()?;
+        let file_descriptor_set_path = tmp.path().join("prost-descriptor-set");
+
+        // write the annotations to the temp directory
+        annotations::generate(&tmp)?;
+
+        // set up the include directories
+        let includes: Vec<_> = includes
+            .iter()
+            .map(|include| include as &dyn AsRef<Path>)
+            .chain(std::iter::once(&tmp as &dyn AsRef<Path>))
+            .collect();
+
+        // generate the postgrpc services and inject the relevant files into the tempdir
+        let services = protoc::compile_services(protos, &includes, &file_descriptor_set_path)?;
 
         #[cfg(feature = "validation")]
         // validate Service methods against the database if there's a connection string
@@ -42,8 +57,11 @@ impl Builder {
         }
 
         // generate postgRPC Service implementations
-        config.service_generator(Box::new(ServiceGenerator::new(services)));
-        config.compile_protos(protos, includes)?;
+        config
+            .skip_protoc_run()
+            .file_descriptor_set_path(file_descriptor_set_path)
+            .service_generator(Box::new(ServiceGenerator::new(services)))
+            .compile_protos(protos, &includes)?;
 
         Ok(())
     }

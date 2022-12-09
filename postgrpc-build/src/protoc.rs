@@ -6,17 +6,16 @@ use std::{io, path::Path};
 pub(crate) fn compile_services(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
+    file_descriptor_set_path: &Path,
 ) -> io::Result<Services> {
-    let tmp = tempfile::Builder::new().prefix("prost-build").tempdir()?;
-    let file_descriptor_set_path = tmp.path().join("prost-descriptor-set");
-
+    // invoke protoc from the environment to build the file descriptors
     let protoc = prost_build::protoc_from_env();
     let mut cmd = std::process::Command::new(protoc.clone());
 
     cmd.arg("--include_imports")
         .arg("--include_source_info")
         .arg("-o")
-        .arg(&file_descriptor_set_path);
+        .arg(file_descriptor_set_path);
 
     for include in includes {
         if include.as_ref().exists() {
@@ -28,7 +27,6 @@ pub(crate) fn compile_services(
         cmd.arg(proto.as_ref());
     }
 
-    // FIXME: use proper logging
     println!("Running: {:?}", cmd);
 
     let output = cmd.output().map_err(|error| {
@@ -46,7 +44,7 @@ pub(crate) fn compile_services(
         ));
     }
 
-    let buf = std::fs::read(&file_descriptor_set_path).map_err(|error| {
+    let buf = std::fs::read(file_descriptor_set_path).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("unable to open file_descriptor_set_path: {file_descriptor_set_path:?}, OS: {error}"),

@@ -45,11 +45,24 @@ pub(crate) fn validate_services(connection_string: &str, services: &Services) ->
 #[cfg(test)]
 mod test {
     use super::validate_services;
-    use crate::{protoc::compile_services, setup};
+    use crate::{annotations, protoc::compile_services, setup};
     use std::path::Path;
 
-    fn validate(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]) -> std::io::Result<()> {
-        let services = compile_services(protos, includes)?;
+    fn validate(protos: &[impl AsRef<Path>]) -> std::io::Result<()> {
+        // create a tempdir for embedded annotations and emitted file descriptors
+        let tmp = tempfile::Builder::new().prefix("test").tempdir()?;
+        let file_descriptor_set_path = tmp.path().join("prost-descriptor-set");
+
+        // write the annotations to the temp directory
+        annotations::generate(&tmp)?;
+
+        // set up the include directories
+        let includes: Vec<_> = [&"./tests/proto" as &dyn AsRef<Path>]
+            .into_iter()
+            .chain(std::iter::once(&tmp as &dyn AsRef<Path>))
+            .collect();
+
+        let services = compile_services(protos, &includes, &file_descriptor_set_path)?;
 
         validate_services(
             "postgresql://postgres:supersecretpassword@localhost:5432",
@@ -61,113 +74,80 @@ mod test {
     fn validates_inline_queries() {
         setup::database();
 
-        validate(
-            &["./tests/proto/inline_query.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/inline_query.proto"]).unwrap();
     }
 
     #[test]
     fn validates_file_queries() {
         setup::database();
 
-        validate(
-            &["./tests/proto/file_query.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/file_query.proto"]).unwrap();
     }
 
     #[test]
     fn validates_scalar_fields() {
         setup::database();
 
-        validate(
-            &["./tests/proto/scalar_fields.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/scalar_fields.proto"]).unwrap();
     }
 
     #[test]
     fn validates_enums() {
         setup::database();
 
-        validate(
-            &["./tests/proto/enums.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/enums.proto"]).unwrap();
     }
 
     #[test]
     fn validates_composite_types() {
         setup::database();
 
-        validate(
-            &["./tests/proto/composites.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/composites.proto"]).unwrap();
     }
 
     #[test]
     fn validates_fields_in_order() {
         setup::database();
 
-        validate(
-            &["./tests/proto/field_order.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .unwrap();
+        validate(&["./tests/proto/field_order.proto"]).unwrap();
     }
 
     #[test]
     fn validates_ctes() {
         setup::database();
 
-        validate(&["./tests/proto/cte.proto"], &["./tests/proto", "./proto"]).unwrap();
+        validate(&["./tests/proto/cte.proto"]).unwrap();
     }
 
     #[test]
     fn validates_ddl_changes() {
         setup::database();
 
-        validate(&["./tests/proto/ddl.proto"], &["./tests/proto", "./proto"]).unwrap()
+        validate(&["./tests/proto/ddl.proto"]).unwrap()
     }
 
     #[test]
     fn rejects_mismatched_field_names() {
         setup::database();
 
-        validate(
-            &["./tests/proto/mismatched_field_name.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .expect_err("Failed to reject method with mismatched field name");
+        validate(&["./tests/proto/mismatched_field_name.proto"])
+            .expect_err("Failed to reject method with mismatched field name");
     }
 
     #[test]
     fn rejects_missing_messages() {
         setup::database();
 
-        validate(
-            &["./tests/proto/missing_message.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .expect_err("Failed to reject method with missing message");
+        validate(&["./tests/proto/missing_message.proto"])
+            .expect_err("Failed to reject method with missing message");
     }
 
     #[test]
     fn rejects_invalid_sql() {
         setup::database();
 
-        validate(
-            &["./tests/proto/invalid_sql.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .expect_err("Failed to reject method with invalid SQL");
+        validate(&["./tests/proto/invalid_sql.proto"])
+            .expect_err("Failed to reject method with invalid SQL");
     }
 
     // FIXME: consider supporting pre-compiled transactions and multi-command statements
@@ -176,11 +156,8 @@ mod test {
     fn rejects_transactions() {
         setup::database();
 
-        validate(
-            &["./tests/proto/transactions.proto"],
-            &["./tests/proto", "./proto"],
-        )
-        .expect_err("Failed to reject multi-statement transaction");
+        validate(&["./tests/proto/transactions.proto"])
+            .expect_err("Failed to reject multi-statement transaction");
     }
 
     // TOTEST:

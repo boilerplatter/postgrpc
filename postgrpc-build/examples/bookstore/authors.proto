@@ -2,7 +2,7 @@ syntax = "proto3";
 package authors.v1;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service Authors {
   rpc GetAuthors (google.protobuf.Empty) returns (stream Author) {

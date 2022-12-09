@@ -2,7 +2,7 @@ syntax = "proto3";
 package mismatched_field;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service MismatchedField {
   rpc TestMismatchedField (TestValue) returns (TestValue) {

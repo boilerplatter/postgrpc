@@ -2,7 +2,7 @@ syntax = "proto3";
 package missing_message;
 
 import "google/protobuf/empty.proto";
-import "annotations.proto";
+import "postgrpc/api/annotations.proto";
 
 service MissingMessage {
   rpc TestMissingInput (TestInput) returns (TestValue) {
