@@ -1,4 +1,4 @@
-use crate::pools::{Connection, Parameter, Pool};
+use crate::pools::{Connection, Pool};
 use futures_util::{pin_mut, stream, StreamExt};
 use std::{hash::Hash, sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
@@ -64,7 +64,7 @@ where
 
         // attempt to make a simple query against the pool
         connection
-            .query::<Vec<Parameter>, _>("SELECT 1", vec![])
+            .query("SELECT 1", &[])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 
@@ -91,7 +91,7 @@ where
 
         // attempt to make a simple query against the transaction
         transaction
-            .query::<Vec<Parameter>, _>("SELECT 1", vec![])
+            .query("SELECT 1", &[])
             .await
             .map_err(|error| Status::unavailable(error.to_string()))?;
 

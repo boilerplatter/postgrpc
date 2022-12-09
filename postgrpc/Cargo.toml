@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 doctest = false
 path = "src/lib.rs"
+required-features = ["codegen"]
 
 [[bin]]
 name = "postgrpc"
@@ -27,22 +28,35 @@ path = "src/main.rs"
 doc = false
 required-features = ["server", "deadpool"]
 
-[build-dependencies]
-pbjson-build = "0.5.1"
-tonic-build = "0.8.4"
+[build-dependencies.pbjson-build]
+git = "https://github.com/NAlexPear/pbjson.git"
+branch = "extensions"
+version = "0.5.1"
+
+[build-dependencies.tonic-build]
+git = "https://github.com/NAlexPear/tonic.git"
+branch = "extensions"
+version = "0.8.4"
 
 [dependencies]
 bytes = "1.3.0"
 futures-util = "0.3.25"
 num = "0.4.0"
-pbjson = "0.5.1"
-pbjson-types = "0.5.1"
 postgres_array = "0.11.1"
-prost = "0.11.3"
 serde_json = "1.0.89"
 thiserror = "1.0.37"
 tokio-stream = "0.1.11"
 tracing = "0.1.37"
+
+[dependencies.pbjson]
+git = "https://github.com/NAlexPear/pbjson.git"
+branch = "extensions"
+version = "0.5.1"
+
+[dependencies.pbjson-types]
+git = "https://github.com/NAlexPear/pbjson.git"
+branch = "extensions"
+version = "0.5.1"
 
 [dependencies.deadpool-postgres]
 optional = true
@@ -69,6 +83,11 @@ version = "0.2.9"
 optional = true
 version = "0.5.0"
 
+[dependencies.prost]
+git = "https://github.com/NAlexPear/prost.git"
+branch = "extensions"
+version = "0.11.3"
+
 [dependencies.serde]
 features = ["derive"]
 version = "1.0.148"
@@ -85,14 +104,20 @@ version = "0.7.7"
 [dependencies.tonic]
 default-features = false
 features = ["codegen", "prost", "transport"]
+git = "https://github.com/NAlexPear/tonic.git"
+branch = "extensions"
 version = "0.8.3"
 
 [dependencies.tonic-health]
 optional = true
+git = "https://github.com/NAlexPear/tonic.git"
+branch = "extensions"
 version = "0.8.0"
 
 [dependencies.tonic-reflection]
 optional = true
+git = "https://github.com/NAlexPear/tonic.git"
+branch = "extensions"
 version = "0.6.0"
 
 [dependencies.tower-http]
@@ -116,7 +141,7 @@ default = [
   "ssl-native-tls",
   "health",
   "deadpool",
-  "reflection",
+  "reflection", 
   "role-header"
 ]
 
@@ -136,6 +161,7 @@ server = ["envy"]
 health = ["tonic-health"]
 reflection = ["tonic-reflection"]
 role-header = []
+codegen = []
 
 # TODO: features
 # - gRPC-web (again)

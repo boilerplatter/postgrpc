@@ -1,0 +1,34 @@
+[package]
+authors = ["Alex Pearson <alex@platter.dev>"]
+edition = "2021"
+license = "MIT"
+name = "examples"
+publish = false
+version = "0.1.0"
+
+[[bin]]
+name = "bookstore"
+path = "bookstore/main.rs"
+
+[build-dependencies.postgrpc-build]
+path = "../postgrpc-build"
+
+[dependencies]
+tokio = "1.23.0"
+
+[dependencies.postgrpc]
+default-features = false
+features = ["codegen", "deadpool"]
+path = "../postgrpc"
+
+[dependencies.tonic]
+default-features = false
+features = ["codegen", "prost", "transport"]
+git = "https://github.com/NAlexPear/tonic.git"
+branch = "extensions"
+version = "0.8.3"
+
+[dependencies.prost]
+git = "https://github.com/NAlexPear/prost.git"
+branch = "extensions"
+version = "0.11.3" 

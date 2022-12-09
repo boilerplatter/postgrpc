@@ -18,7 +18,10 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio_postgres::{types::BorrowToSql, Row};
+use tokio_postgres::{
+    types::ToSql,
+    Row,
+};
 use tonic::{async_trait, Status};
 #[cfg(feature = "ssl-native-tls")]
 use {native_tls::TlsConnector, postgres_native_tls::MakeTlsConnector};
@@ -77,6 +80,7 @@ pub struct Pool {
     statement_timeout: Option<Duration>,
 }
 
+#[allow(unused_variables)]
 #[async_trait]
 impl super::Pool<Struct> for Pool {
     #[cfg(feature = "role-header")]
@@ -120,6 +124,7 @@ impl super::Pool<Struct> for Pool {
     }
 }
 
+#[allow(unused_variables)]
 #[async_trait]
 impl super::Pool<Row> for Pool {
     #[cfg(feature = "role-header")]
@@ -208,15 +213,11 @@ impl Connection<Struct> for Client {
     type Error = Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query<B, I>(
+    async fn query(
         &self,
         statement: &str,
-        parameters: I,
+        parameters: &[&(dyn ToSql + Sync)],
     ) -> Result<Self::RowStream, Self::Error>
-    where
-        B: BorrowToSql,
-        I: IntoIterator<Item = B> + Send + Sync + Clone,
-        I::IntoIter: ExactSizeIterator + Send,
     {
         tracing::trace!("Querying Connection");
 
@@ -225,16 +226,14 @@ impl Connection<Struct> for Client {
 
         // check parameter count to avoid panics
         let inferred_types = prepared_statement.params();
-        let params = parameters.clone().into_iter();
-
-        if inferred_types.len() != params.len() {
+        if inferred_types.len() != parameters.len() {
             return Err(Error::Params {
                 expected: inferred_types.len(),
-                actual: params.len(),
+                actual: parameters.len(),
             });
         }
 
-        let rows = match query_raw_json(self, statement, &prepared_statement, parameters.clone())
+        let rows = match query_raw_json(self, statement, &prepared_statement, parameters)
             .await
         {
             // retry the query if the schema changed underneath the prepared statement cache
@@ -245,7 +244,7 @@ impl Connection<Struct> for Client {
                     .statement_cache
                     .remove(statement, inferred_types);
 
-                query_raw_json(self, statement, &prepared_statement, parameters).await
+                query_raw_json(self, statement, &prepared_statement, &parameters).await
             }
             result => result,
         }?;
@@ -296,16 +295,11 @@ impl Connection<Row> for Client {
     type Error = Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query<B, I>(
+    async fn query(
         &self,
         statement: &str,
-        parameters: I,
-    ) -> Result<Self::RowStream, Self::Error>
-    where
-        B: BorrowToSql,
-        I: IntoIterator<Item = B> + Send + Sync + Clone,
-        I::IntoIter: ExactSizeIterator + Send,
-    {
+        parameters: &[&(dyn ToSql + Sync)],
+    ) -> Result<Self::RowStream, Self::Error> {
         tracing::trace!("Querying TypedConnection");
 
         // prepare the statement using the statement cache
@@ -314,20 +308,16 @@ impl Connection<Row> for Client {
         // check parameter count to avoid panics
         let inferred_types = prepared_statement.params();
 
-        // FIXME: avoid the Clone requirement on parameters
-        let params = parameters.clone().into_iter();
-        let parameter_count = params.len();
-
-        if inferred_types.len() != parameter_count {
+        if inferred_types.len() != parameters.len() {
             return Err(Error::Params {
                 expected: inferred_types.len(),
-                actual: parameter_count,
+                actual: parameters.len(),
             });
         }
 
         let rows = match self
             .client
-            .query_raw(&prepared_statement, parameters.clone())
+            .query_raw(&prepared_statement, parameters.to_vec())
             .await
         {
             // retry the query if the schema changed underneath the prepared statement cache
@@ -338,7 +328,7 @@ impl Connection<Row> for Client {
                     .statement_cache
                     .remove(statement, inferred_types);
 
-                self.client.query_raw(&prepared_statement, parameters).await
+                self.client.query_raw(&prepared_statement, parameters.to_vec()).await
             }
             result => result,
         }?;
@@ -357,22 +347,17 @@ impl Connection<Row> for Client {
 }
 
 /// Wrapper around a raw JSON query that can be retried
-async fn query_raw_json<B, I>(
+async fn query_raw_json(
     client: &Client,
     statement: &str,
     prepared_statement: &Statement,
-    parameters: I,
-) -> Result<RowStream, Error>
-where
-    B: BorrowToSql,
-    I: IntoIterator<Item = B> + Send + Sync + Clone,
-    I::IntoIter: ExactSizeIterator + Send,
-{
+    parameters: &[&(dyn ToSql + Sync)],
+) -> Result<RowStream, Error> {
     let rows = if prepared_statement.columns().is_empty() {
         // execute statements that return no data without modification
         client
             .client
-            .query_raw(prepared_statement, parameters)
+            .query_raw(prepared_statement, parameters.to_vec())
             .await?
     } else {
         // wrap queries that return data in to_json()
@@ -387,7 +372,7 @@ where
 
         client
             .client
-            .query_raw(&prepared_statement, parameters)
+            .query_raw(&prepared_statement, parameters.to_vec())
             .await?
     };
 
@@ -400,31 +385,31 @@ where
 pub struct Configuration {
     /// maximum size of each connection pool, defaulting to 4x the number of physical CPUs
     #[serde(default = "get_max_connection_pool_size")]
-    max_connection_pool_size: usize,
+    pub max_connection_pool_size: usize,
     /// maximum amount of time to wait for a statement to complete (in milliseconds)
     #[serde(default, deserialize_with = "from_milliseconds_string")]
-    statement_timeout: Option<Duration>,
+    pub statement_timeout: Option<Duration>,
     /// connection recycling method to use when connections are returned to the pool
     #[serde(default)]
-    recycling_method: RecyclingMethod,
+    pub recycling_method: RecyclingMethod,
     /// Postgres database to connect to
-    pgdbname: String,
+    pub pgdbname: String,
     /// host to use for database connections
     #[serde(default = "get_localhost")]
-    pghost: String,
+    pub pghost: String,
     /// Password to use for database connections
-    pgpassword: String,
+    pub pgpassword: String,
     /// Port to use for database connections
     #[serde(default = "get_postgres_port")]
-    pgport: u16,
+    pub pgport: u16,
     /// User to use for database connections
-    pguser: String,
+    pub pguser: String,
     /// Application name for Postgres session tracking
     #[serde(default = "get_application_name")]
-    pgappname: String,
+    pub pgappname: String,
     /// SSL mode for upstream connections
     #[serde(default)]
-    pgsslmode: Option<SslMode>,
+    pub pgsslmode: Option<SslMode>,
 }
 
 impl Configuration {
@@ -526,9 +511,27 @@ where
     }
 }
 
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            max_connection_pool_size: get_max_connection_pool_size(),
+            statement_timeout: None,
+            recycling_method: RecyclingMethod::default(),
+            pgdbname: "postgres".to_owned(),
+            pghost: get_localhost(),
+            pgpassword: "".to_string(),
+            pgport: get_postgres_port(),
+            pguser: "postgres".to_owned(),
+            pgappname: get_application_name(),
+            pgsslmode: None,
+        }
+    }
+}
+
+#[allow(missing_docs)]
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "lowercase")]
-enum RecyclingMethod {
+pub enum RecyclingMethod {
     Fast,
     Verified,
     #[default]
@@ -545,9 +548,10 @@ impl From<RecyclingMethod> for deadpool_postgres::RecyclingMethod {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
-enum SslMode {
+pub enum SslMode {
     Disable,
     Prefer,
     Require,

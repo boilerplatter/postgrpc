@@ -67,6 +67,11 @@ pub mod extensions;
 /// [`pools::Pool`] and [`pools::Connection`]
 pub use tonic::async_trait;
 
+/// Re-export of shared libraries for code generation.
+#[doc(hidden)]
+#[cfg(feature = "codegen")]
+pub mod codegen;
+
 /// Compiled file descriptors for implementing [gRPC
 /// reflection](https://github.com/grpc/grpc/blob/master/doc/server-reflection.md) with e.g.
 /// [`tonic_reflection`](https://docs.rs/tonic-reflection).

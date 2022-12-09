@@ -12,7 +12,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tokio_postgres::types::BorrowToSql;
+use tokio_postgres::types::ToSql;
 use tonic::{async_trait, Status};
 use tracing::Instrument;
 use uuid::Uuid;
@@ -122,16 +122,11 @@ where
     type Error = C::Error;
 
     #[tracing::instrument(skip(self, parameters))]
-    async fn query<B, I>(
+    async fn query(
         &self,
         statement: &str,
-        parameters: I,
-    ) -> Result<Self::RowStream, Self::Error>
-    where
-        B: BorrowToSql,
-        I: IntoIterator<Item = B> + Send + Sync + Clone,
-        I::IntoIter: ExactSizeIterator + Send,
-    {
+        parameters: &[&(dyn ToSql + Sync)],
+    ) -> Result<Self::RowStream, Self::Error> {
         tracing::trace!("Querying transaction Connection");
         let rows = self.connection.query(statement, parameters).await?;
         let mut last_used_at = self.last_used_at.write().await;

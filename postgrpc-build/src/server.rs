@@ -4,41 +4,25 @@ use quote::quote;
 use tonic_build::{CodeGenBuilder, Method as _, Service};
 
 /// Generate a postgRPC Service implementation for use with the `tonic` + `tower` ecosystem
-pub(crate) fn generate<'a, S>(
-    service: &S,
-    proto_service: &ProtoService<'a>,
-    proto_path: &str,
-) -> TokenStream
+pub(crate) fn generate<'a, S>(service: &S, proto_service: &ProtoService<'a>) -> TokenStream
 where
     S: Service,
 {
     // FIXME: make this tonic generation configurable in case users have their own tonic compilation steps
     // generate the tonic dependencies
-    let tonic_output = CodeGenBuilder::new().generate_server(service, proto_path);
+    let tonic_output = CodeGenBuilder::new().generate_server(service, "super::super");
 
     // derive the same dependencies as Tonic
     let server_service = quote::format_ident!("{}Server", service.name());
     let server_trait = quote::format_ident!("{}", service.name());
     let server_mod = quote::format_ident!("{}_server", naive_snake_case(service.name()));
-    let methods = generate_methods(service, proto_service, proto_path);
+    let methods = generate_methods(service, proto_service);
 
     // FIXME: make sure that dependencies are properly resolved here!
-    // we should namespace these in a "codegen" module in postgrpc_lib
+    // we should namespace these in a "codegen" module in postgrpc
     quote! {
-        use postgrpc_lib::{
-            extensions::FromRequest,
-            pools::{Connection, Pool},
-            codegen::*
-        };
+        use postgrpc::codegen::*;
         use proto::#server_mod::{#server_trait as GrpcService, #server_service};
-
-        // FIXME: export all of these from postgrpc_lib::codegen
-        use futures_util::{pin_mut, StreamExt, TryStreamExt};
-        use std::sync::Arc;
-        use tokio::sync::mpsc::error::SendError;
-        use tokio_stream::wrappers::UnboundedReceiverStream;
-        use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
-        use postgres_types::{BorrowToSql, Row};
 
         #[allow(unreachable_pub, missing_docs)]
         mod proto {
@@ -61,16 +45,12 @@ where
 
             /// Query the Postgres database, returning a stream of rows
             #[tracing::instrument(skip(self, parameters), err)]
-            async fn query<B, I>(
+            async fn query(
                 &self,
                 key: P::Key,
                 statement: &str,
-                parameters: I,
+                parameters: &[&(dyn ToSql + Sync)],
             ) -> Result<<P::Connection as Connection<Row>>::RowStream, P::Error>
-            where
-                B: BorrowToSql,
-                I: IntoIterator<Item = B> + Send + Sync + Clone,
-                I::IntoIter: ExactSizeIterator + Send
             {
                 tracing::info!("Querying postgres");
 
@@ -78,7 +58,7 @@ where
                     .pool
                     .get_connection(key)
                     .await?
-                    .query(statement, parameters) // FIXME: make compatible with Pool type
+                    .query(statement, parameters)
                     .await?;
 
                 Ok(rows)
@@ -86,7 +66,7 @@ where
         }
 
         /// concrete gRPC service implementation for the configured postgRPC service
-        #[tonic::async_trait]
+        #[async_trait]
         impl<P> GrpcService for #server_trait<P>
         where
             P: Pool<Row> + 'static,
@@ -120,11 +100,7 @@ where
 }
 
 /// generate tonic-compatible service methods
-fn generate_methods<'a, S>(
-    service: &S,
-    proto_service: &ProtoService<'a>,
-    proto_path: &str,
-) -> TokenStream
+fn generate_methods<'a, S>(service: &S, proto_service: &ProtoService<'a>) -> TokenStream
 where
     S: Service,
 {
@@ -144,57 +120,70 @@ where
         // FIXME: double-check that this shouldn't be snake-cased... is this a regression upstream?
         let name = quote::format_ident!("{name}");
 
-        // FIXME: use compile_well_known_types from caller, if relevant
-        let (request, response) = method.request_response_name(proto_path, false);
-
         // FIXME: either support all streaming combinations or complain loudly
         if !method.client_streaming() && method.server_streaming() {
             let stream = quote::format_ident!("{}Stream", method.identifier());
-            let parameters = proto_method.input_type().fields().map(|field| field.name());
-            let output_type = proto_method.output_type();
 
-            // convert columns into valid output type fields
-            #[allow(clippy::if_same_then_else)]
-            let row_conversion = if output_type.name() == ".google.protobuf.Empty" {
+            // generate the request types
+            let input_type = proto_method.input_type();
+            let request = if input_type.name() == ".google.protobuf.Empty" {
                 quote! { () }
             } else {
-                // FIXME: this is wrong! collect the row conversion to the target message type
-                quote! { () }
-                // let fields = proto_method.output_type().fields().map(|field| {
-                //     let name = field.name();
+                let request = quote::format_ident!("{}", input_type.proto_type());
 
-                //     // FIXME: make this fallible! panic-ing at runtime is probably incorrect
-                //     quote! { #name: row.get(#name) }
-                // });
+                quote! { #request }
+            };
+            let request_fields = input_type
+                .fields()
+                .map(|field| quote::format_ident!("{}", field.name()));
 
-                // quote! {
-                //     #response {
-                //         #(#fields),*
-                //     }
-                // }
+            // generate the response types
+            let output_type = proto_method.output_type();
+            let (response, row_conversion) = if output_type.name() == ".google.protobuf.Empty" {
+                (TokenStream::new(), quote! { () })
+            } else {
+                let response = quote::format_ident!("{}", output_type.proto_type());
+                let fields = output_type.fields().map(|field| {
+                    let key = field.name();
+                    let field = quote::format_ident!("{}", key);
+
+                    // FIXME: make this fallible! panic-ing at runtime is probably incorrect,
+                    // despite previous efforts to check and validate the types
+                    quote! { #field: row.get(#key) }
+                });
+
+                (
+                    quote! { #response },
+                    quote! {
+                        #response {
+                            #(#fields),*
+                        }
+                    },
+                )
             };
 
             let method = quote! {
-                type #stream = UnboundedReceiverStream<Result<#response, tonic::Status>>;
+                type #stream = UnboundedReceiverStream<Result<#response, Status>>;
 
                 #[tracing::instrument(skip(self, request), err)]
-                async fn #name(&self, mut request: tonic::Request<#request>) -> Result<tonic::Response<Self::#stream>, tonic::Status> {
+                async fn #name(&self, mut request: Request<#request>) -> Result<Response<Self::#stream>, Status> {
                     // derive a key from extensions to use as a connection pool key
-                    let key = P::Key::from_request(&mut request).map_err(Into::<tonic::Status>::into)?;
+                    let key = P::Key::from_request(&mut request).map_err(Into::<Status>::into)?;
+                    let request = request.into_inner();
 
                     // get the rows, converting output to #response messages
                     let rows = self
-                        .query(key, #query, &[#(#parameters),*])
+                        .query(key, #query, &[#(&request.#request_fields),*])
                         .await
-                        .map_err(Into::<tonic::Status>::into)?
+                        .map_err(Into::<Status>::into)?
                         .map_ok(|row| #row_conversion)
-                        .map_err(Into::<tonic::Status>::into);
+                        .map_err(Into::<Status>::into);
 
                     // create the row stream transmitter and receiver
-                    let (transmitter, receiver) = tokio::sync::mpsc::unbounded_channel();
+                    let (transmitter, receiver) = unbounded_channel();
 
                     // emit the rows as a Send stream
-                    tokio::spawn(async move {
+                    spawn(async move {
                         pin_mut!(rows);
 
                         while let Some(row) = rows.next().await {
@@ -204,7 +193,7 @@ where
                         Ok::<_, SendError<_>>(())
                     });
 
-                    Ok(tonic::Response::new(UnboundedReceiverStream::new(receiver)))
+                    Ok(Response::new(UnboundedReceiverStream::new(receiver)))
                 }
             };
 

@@ -5,7 +5,6 @@ use std::{io, path::Path};
 /// Configuration builder for proto compilation
 #[derive(Debug, Default)]
 pub struct Builder {
-    proto_path: String,
     #[cfg(feature = "postgres")]
     connection_string: Option<String>,
 }
@@ -43,7 +42,7 @@ impl Builder {
         }
 
         // generate postgRPC Service implementations
-        config.service_generator(Box::new(ServiceGenerator::new(&self, services)));
+        config.service_generator(Box::new(ServiceGenerator::new(services)));
         config.compile_protos(protos, includes)?;
 
         Ok(())
@@ -52,10 +51,7 @@ impl Builder {
 
 /// Configure `postgrpc-build` code generation.
 pub fn configure() -> Builder {
-    Builder {
-        proto_path: "super".to_owned(),
-        ..Default::default()
-    }
+    Builder::default()
 }
 
 /// Simple `.proto` compiling. Use [`configure`] instead if you need more options.
@@ -74,15 +70,13 @@ pub fn compile_protos(proto: impl AsRef<Path>) -> io::Result<()> {
 /// Custom Prost-compatible service generator for implemtning gRPC service implemntations for
 /// modules with postgrpc-annotated methods
 struct ServiceGenerator {
-    proto_path: String,
     servers: TokenStream,
     services: Services,
 }
 
 impl ServiceGenerator {
-    fn new(builder: &Builder, services: Services) -> Self {
+    fn new(services: Services) -> Self {
         Self {
-            proto_path: builder.proto_path.to_owned(),
             servers: TokenStream::default(),
             services,
         }
@@ -97,7 +91,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
             .expect("Error resolving service module")
             .expect("Service not found in the file descriptor set");
 
-        let server = server::generate(&service, proto_service, &self.proto_path);
+        let server = server::generate(&service, proto_service);
 
         self.servers.extend(server);
     }
@@ -128,7 +122,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
 
 #[cfg(test)]
 mod test {
-    use super::{Builder, ServiceGenerator};
+    use super::ServiceGenerator;
     use crate::{
         annotations::{Query, QUERY},
         proto::Services,
@@ -236,8 +230,7 @@ mod test {
     fn generates_service_token_streams() {
         // generate the default test service
         let (service, protos) = generate_test_service();
-        let builder = Builder::default();
-        let mut generator = ServiceGenerator::new(&builder, protos);
+        let mut generator = ServiceGenerator::new(protos);
         generator.generate(service, &mut String::new());
 
         // assert that the service implementations were generated
@@ -249,8 +242,7 @@ mod test {
         // generate the default test service
         let (service, protos) = generate_test_service();
         let mut output = String::new();
-        let builder = Builder::default();
-        let mut generator = ServiceGenerator::new(&builder, protos);
+        let mut generator = ServiceGenerator::new(protos);
 
         // generate the prettified output
         generator.generate(service, &mut output);

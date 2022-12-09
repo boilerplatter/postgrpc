@@ -47,6 +47,14 @@ impl<'a, 'b> Message<'a> {
         })
     }
 
+    pub(crate) fn proto_type(&self) -> &str {
+        if self.fields.is_empty() {
+            "()"
+        } else {
+            self.name()
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         self.name
     }

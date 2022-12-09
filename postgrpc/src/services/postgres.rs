@@ -7,6 +7,7 @@ use proto::postgres_server::{Postgres as GrpcService, PostgresServer};
 pub use proto::QueryRequest;
 use std::{marker::PhantomData, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
+use tokio_postgres::types::ToSql;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 
@@ -42,7 +43,7 @@ where
         &self,
         key: P::Key,
         statement: &str,
-        parameters: &[Parameter],
+        parameters: &[&(dyn ToSql + Sync)],
     ) -> Result<<P::Connection as Connection<R>>::RowStream, P::Error> {
         tracing::info!("Querying postgres");
 
@@ -80,15 +81,11 @@ where
         let QueryRequest { statement, values } = request.into_inner();
 
         // convert values to valid parameters
-        let value_count = values.len();
-        let parameters: Vec<_> = values.into_iter().map(Parameter::from).collect();
+        let values = values.into_iter().map(Parameter::from).collect::<Vec<_>>();
+        let mut parameters: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(values.len());
 
-        if parameters.len() < value_count {
-            return Err(
-                Status::invalid_argument(
-                    "Invalid parameter values found. Only numbers, strings, boolean, and null values permitted"
-                )
-            );
+        for parameter in values.iter() {
+            parameters.push(parameter);
         }
 
         // get the rows, converting output to proto-compatible structs and statuses

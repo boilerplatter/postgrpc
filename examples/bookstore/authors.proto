@@ -7,13 +7,13 @@ import "annotations.proto";
 service Authors {
   rpc GetAuthors (google.protobuf.Empty) returns (stream Author) {
     option (postgrpc.query) = {
-      file: "./examples/bookstore/get_authors.sql"
+      file: "./bookstore/get_authors.sql"
     };
   }
 
-  rpc CreateAuthor (CreateAuthorRequest) returns (Author) {
+  rpc CreateAuthor (CreateAuthorRequest) returns (stream Author) {
     option (postgrpc.query) = {
-      file: "./examples/bookstore/create_author.sql"
+      file: "./bookstore/create_author.sql"
     };
   }
 }
@@ -24,7 +24,7 @@ message CreateAuthorRequest {
 }
 
 message Author {
-  uint32 id = 1;
+  int32 id = 1;
   string first_name = 2;
   string last_name = 3;
 }

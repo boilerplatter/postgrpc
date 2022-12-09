@@ -1,6 +1,6 @@
 use futures_util::TryStream;
 use std::fmt;
-use tokio_postgres::types::BorrowToSql;
+use tokio_postgres::types::ToSql;
 use tonic::{async_trait, Status};
 
 #[cfg_attr(doc, doc(cfg(feature = "deadpool")))]
@@ -80,15 +80,11 @@ where
     type Error: std::error::Error + Into<Status> + Send + Sync;
 
     /// Run a query parameterized by the Connection's associated Parameter, returning a RowStream
-    async fn query<B, I>(
+    async fn query(
         &self,
         statement: &str,
-        parameters: I,
-    ) -> Result<Self::RowStream, Self::Error>
-    where
-        B: BorrowToSql,
-        I: IntoIterator<Item = B> + Send + Sync + Clone,
-        I::IntoIter: ExactSizeIterator + Send;
+        parameters: &[&(dyn ToSql + Sync)],
+    ) -> Result<Self::RowStream, Self::Error>;
 
     /// Run a set of SQL statements using the simple query protocol
     async fn batch(&self, query: &str) -> Result<(), Self::Error>;

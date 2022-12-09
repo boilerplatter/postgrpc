@@ -146,18 +146,10 @@ impl<'a, 'b> Field<'a> {
                     &PostgresType::FLOAT4 | &PostgresType::NUMERIC
                 )
             }
-            FieldType::Int32
-            | FieldType::Uint32
-            | FieldType::Sint32
-            | FieldType::Sfixed32
-            | FieldType::Fixed32 => {
+            FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Fixed32 => {
                 matches!(postgres_type, &PostgresType::INT4)
             }
-            FieldType::Int64
-            | FieldType::Uint64
-            | FieldType::Sint64
-            | FieldType::Sfixed64
-            | FieldType::Fixed64 => {
+            FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Fixed64 => {
                 matches!(postgres_type, &PostgresType::INT8)
             }
             FieldType::Bytes => matches!(postgres_type, &PostgresType::BYTEA),
@@ -220,6 +212,15 @@ impl<'a, 'b> Field<'a> {
                     ));
                 }
             },
+            FieldType::Uint32 | FieldType::Uint64 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Unsigned integers are not supported by Postgres. Please use an integer type for field {}",
+                        self.name(),
+                    )
+                ));
+            }
             fixme => todo!("FIXME: support {fixme:#?}"),
         } {
             return Err(io::Error::new(

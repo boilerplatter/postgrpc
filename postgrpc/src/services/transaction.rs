@@ -7,6 +7,7 @@ use proto::transaction_server::{Transaction as GrpcService, TransactionServer};
 pub use proto::{BeginResponse, CommitRequest, RollbackRequest, TransactionQueryRequest};
 use std::{hash::Hash, sync::Arc};
 use tokio::sync::mpsc::error::SendError;
+use tokio_postgres::types::ToSql;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{codegen::InterceptedService, service::Interceptor, Request, Response, Status};
 use uuid::Uuid;
@@ -63,7 +64,7 @@ where
         id: Uuid,
         key: P::Key,
         statement: &str,
-        parameters: &[Parameter],
+        parameters: &[&(dyn ToSql + Sync)],
     ) -> Result<<P::Connection as Connection<R>>::RowStream, Error<P, R>> {
         tracing::info!("Querying transaction");
 
@@ -132,16 +133,11 @@ where
         })?;
 
         // convert values to valid parameters
-        let value_count = values.len();
+        let values = values.into_iter().map(Parameter::from).collect::<Vec<_>>();
+        let mut parameters: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(values.len());
 
-        let parameters: Vec<_> = values.into_iter().map(Parameter::from).collect();
-
-        if parameters.len() < value_count {
-            return Err(
-                Status::invalid_argument(
-                    "Invalid parameter values found. Only numbers, strings, boolean, and null values permitted"
-                )
-            );
+        for parameter in values.iter() {
+            parameters.push(parameter);
         }
 
         // get the rows, converting output to proto-compatible structs and statuses
