@@ -12,5 +12,5 @@ pub use tokio_postgres::{
     Row,
 };
 pub use tokio_stream::wrappers::UnboundedReceiverStream;
-pub use tonic::{codegen::*, service::Interceptor, Request, Response, Status};
+pub use tonic::{self, codegen::*, service::Interceptor, Request, Response, Status};
 pub use tracing;

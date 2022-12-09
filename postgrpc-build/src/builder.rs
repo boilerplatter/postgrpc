@@ -10,14 +10,15 @@ pub struct Builder {
 }
 
 impl Builder {
-    #[cfg(feature = "validation")]
+    #[cfg_attr(doc, doc(cfg(feature = "validation")))]
+    #[cfg(any(doc, feature = "validation"))]
     /// Provide a database connection string for type validation
     pub fn validate_with(mut self, connection_string: String) -> Self {
         self.connection_string = Some(connection_string);
         self
     }
 
-    /// compile a set of protos and includes with the default build configuration
+    /// Compile a set of `protos` and `includes` with the default build configuration.
     pub fn compile(
         self,
         protos: &[impl AsRef<Path>],
@@ -26,7 +27,7 @@ impl Builder {
         self.compile_with_config(prost_build::Config::new(), protos, includes)
     }
 
-    /// compile protos using a [`prost_build::Config`]
+    /// Compile protos using a custom [`prost_build::Config`].
     pub fn compile_with_config(
         self,
         mut config: prost_build::Config,
