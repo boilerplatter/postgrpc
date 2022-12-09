@@ -137,6 +137,7 @@ version = "1.2.2"
 [features]
 default = [
   "server",
+  "postgres",
   "transaction",
   "ssl-native-tls",
   "health",
@@ -156,6 +157,7 @@ ssl-native-tls = [
   "postgres-native-tls"
 ]
 
+postgres = [] # FIXME: pare down dependencies here
 transaction = ["uuid"]
 server = ["envy"]
 health = ["tonic-health"]

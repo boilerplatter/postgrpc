@@ -1,5 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "postgres", feature = "transaction", feature = "reflection"))]
     {
         let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
         let descriptor_path = out_dir.join("routes.bin");

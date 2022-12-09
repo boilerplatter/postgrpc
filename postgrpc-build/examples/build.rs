@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .validate_with("postgresql://postgres:supersecretpassword@localhost:5432".to_owned())
         .compile(
             &["./bookstore/authors.proto"],
-            &["./bookstore", "../postgrpc-build/proto"],
+            &["./bookstore", "../../postgrpc-build/proto"],
         )?;
 
     Ok(())

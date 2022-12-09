@@ -4,6 +4,8 @@
 pub mod health;
 
 /// Postgres service that exposes the basic querying interface
+#[cfg_attr(doc, doc(cfg(feature = "postgres")))]
+#[cfg(any(doc, feature = "postgres"))]
 pub mod postgres;
 
 /// Transaction service that enables distributed transactions over a database

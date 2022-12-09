@@ -11,7 +11,7 @@ name = "bookstore"
 path = "bookstore/main.rs"
 
 [build-dependencies.postgrpc-build]
-path = "../postgrpc-build"
+path = "../../postgrpc-build"
 
 [dependencies]
 tokio = "1.23.0"
@@ -19,7 +19,7 @@ tokio = "1.23.0"
 [dependencies.postgrpc]
 default-features = false
 features = ["codegen", "deadpool"]
-path = "../postgrpc"
+path = "../../postgrpc"
 
 [dependencies.tonic]
 default-features = false
@@ -32,3 +32,7 @@ version = "0.8.3"
 git = "https://github.com/NAlexPear/prost.git"
 branch = "extensions"
 version = "0.11.3" 
+
+# Workaround for workspace member exclusion bug
+# https://github.com/rust-lang/cargo/issues/6745
+[workspace]

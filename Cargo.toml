@@ -5,7 +5,3 @@ members = [
   "postguard",
   "postgrpc-build",
 ]
-
-exclude = [
-  "examples"
-]
